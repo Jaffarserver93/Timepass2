@@ -249,13 +249,13 @@ class AFKBot {
       this.log("Send Code clicked. Waiting 5 seconds for OTP email to arrive...");
       await this._sleep(5000); // give the mail server time to deliver before IMAP search
 
-      // Step 2: fetch OTP — only accepts emails with UID >= minUid (new emails)
+      // Step 2: fetch OTP — retries every 5s for up to 2 min
       const otp = await fetchOTP({
         ...this.imapConfig,
-        sender: "noreply@bytenut.com",
         timeout: 120000,
-        minUid,          // primary guard: UID-based, immune to clock skew
-        sentAfter: sendCodeTime,  // secondary guard: timestamp fallback
+        minUid,
+        sentAfter: sendCodeTime,
+        log: (msg) => this.log(msg, "info"),
       });
       this.log(`OTP received: ${otp}`);
 

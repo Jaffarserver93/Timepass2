@@ -28,10 +28,9 @@ async function getUIDNext({ host, port, user, pass }) {
 
 /**
  * Single attempt: connect fresh, search last 10 min, find bytenut OTP email.
- * Returns the OTP string or null if not found.
- * Ported directly from the reference open-source dashboard implementation.
+ * Returns the OTP string or null if not found yet.
  */
-async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
+async function _tryFetchOTP({ host, port, user, pass, sentAfter, log }) {
   const portNum = parseInt(port);
   const secure = portNum === 993 || portNum === 465;
 
@@ -49,51 +48,61 @@ async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
     const lock = await client.getMailboxLock("INBOX");
 
     try {
-      // Search ALL emails in the last 10 minutes — no from filter.
-      // Reference uses no from filter; some servers don't index FROM correctly.
+      // Search ALL emails in the last 10 minutes
       const since = new Date(Date.now() - 10 * 60 * 1000);
       const allRecent = await client.search({ since });
+      log(`IMAP: found ${allRecent ? allRecent.length : 0} email(s) in last 10 min`);
 
       if (!allRecent || allRecent.length === 0) return null;
 
-      // Newest first, check up to 10 most recent
+      // Newest first, check up to 10
       const toCheck = [...allRecent].reverse().slice(0, 10);
 
       for (const seq of toCheck) {
-        // fetchOne with NO third argument — exactly as the reference does it.
-        // Passing { uid: true } as third arg causes silent failures on some servers.
         const msg = await client.fetchOne(String(seq), {
           envelope: true,
           source: true,
           internalDate: true,
         });
-        if (!msg) continue;
 
-        const fromName    = (msg.envelope?.from?.[0]?.name    ?? "").toLowerCase();
-        const fromAddr    = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
-        const subject     = msg.envelope?.subject ?? "";
-        const raw         = msg.source?.toString() ?? "";
+        if (!msg) {
+          log(`IMAP: seq ${seq} → fetchOne returned null, skipping`);
+          continue;
+        }
 
-        // Only process bytenut.com emails
+        const fromAddr = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
+        const fromName = (msg.envelope?.from?.[0]?.name ?? "").toLowerCase();
+        const subject  = msg.envelope?.subject ?? "";
+        const rawLen   = msg.source ? msg.source.length : 0;
+
+        log(`IMAP: seq ${seq} | from: ${fromAddr} | subject: "${subject}" | rawLen: ${rawLen}`);
+
+        // Only process bytenut emails
         const isBytenut =
           fromAddr.includes("bytenut") ||
           fromName.includes("bytenut") ||
           subject.toLowerCase().includes("bytenut") ||
           subject.toLowerCase().includes("verification") ||
-          raw.toLowerCase().includes("bytenut");
+          (msg.source && msg.source.toString().toLowerCase().includes("bytenut"));
 
-        if (!isBytenut) continue;
+        if (!isBytenut) {
+          log(`IMAP: seq ${seq} → not a bytenut email, skipping`);
+          continue;
+        }
 
         // Time guard: skip emails that arrived before we clicked Send Code
         if (sentAfter && msg.internalDate) {
           const arrived = new Date(msg.internalDate).getTime();
-          if (arrived < sentAfter - 15000) continue; // 15s tolerance
+          const diff = arrived - sentAfter;
+          log(`IMAP: seq ${seq} → arrived ${diff > 0 ? "+" : ""}${Math.round(diff/1000)}s relative to Send Code click`);
+          if (arrived < sentAfter - 30000) {
+            log(`IMAP: seq ${seq} → too old (arrived >30s before Send Code), skipping`);
+            continue;
+          }
         }
 
-        // Decode quoted-printable and strip HTML to get clean plain text.
-        // IMPORTANT: bytenut email has CSS color codes like #212529 and #495057
-        // in <style> blocks — simple raw.match(/\d{6}/) always hits those first.
-        // We must strip HTML first and then anchor the search to "Verification Code".
+        // Decode quoted-printable + strip HTML
+        const raw = msg.source ? msg.source.toString() : "";
         const decoded = raw
           .replace(/=\r?\n/g, "")
           .replace(/=[0-9A-Fa-f]{2}/g, m => String.fromCharCode(parseInt(m.slice(1), 16)));
@@ -102,20 +111,29 @@ async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
           .replace(/&nbsp;/gi, " ")
           .replace(/\s+/g, " ");
 
-        // Primary: "Verification Code 095009" — the OTP always follows this label
+        // Primary: "Verification Code 095009"
         const vcMatch = plain.match(/verification\s+code\s+(\d{6})/i);
-        if (vcMatch) return vcMatch[1];
+        if (vcMatch) {
+          log(`IMAP: seq ${seq} → OTP found via "Verification Code" label: ${vcMatch[1]}`);
+          return vcMatch[1];
+        }
 
-        // Fallback: any 6-digit sequence NOT preceded by # (excludes CSS hex colors)
+        // Fallback: any 6-digit number NOT preceded by # (excludes CSS hex colors)
         const bodyMatch = plain.match(/(?<!#)\b(\d{6})\b/);
-        if (bodyMatch) return bodyMatch[1];
+        if (bodyMatch) {
+          log(`IMAP: seq ${seq} → OTP found via body fallback: ${bodyMatch[1]}`);
+          return bodyMatch[1];
+        }
+
+        log(`IMAP: seq ${seq} → bytenut email found but no 6-digit OTP extracted`);
       }
 
       return null;
     } finally {
       lock.release();
     }
-  } catch (_) {
+  } catch (err) {
+    log(`IMAP: connection/fetch error — ${err.message}`);
     return null;
   } finally {
     await client.logout().catch(() => {});
@@ -124,15 +142,22 @@ async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
 
 /**
  * Retries _tryFetchOTP every 5 seconds until OTP is found or timeout expires.
- * Fresh IMAP connection on every attempt — avoids stale-connection/cache issues.
+ * Fresh IMAP connection on every attempt — avoids stale-connection cache issues.
+ * Pass log function to see per-attempt details in the dashboard.
  */
-async function fetchOTP({ host, port, user, pass, timeout = 120000, sentAfter = null, minUid = null }) {
+async function fetchOTP({ host, port, user, pass, timeout = 120000, sentAfter = null, minUid = null, log = console.log }) {
   const deadline = Date.now() + timeout;
+  let attempt = 0;
 
   while (Date.now() < deadline) {
-    const otp = await _tryFetchOTP({ host, port, user, pass, sentAfter });
+    attempt++;
+    const remaining = Math.round((deadline - Date.now()) / 1000);
+    log(`IMAP: attempt ${attempt} (${remaining}s remaining)...`);
+
+    const otp = await _tryFetchOTP({ host, port, user, pass, sentAfter, log });
     if (otp) return otp;
-    await sleep(5000);
+
+    if (Date.now() < deadline) await sleep(5000);
   }
 
   throw new Error("OTP email not received within timeout (2 minutes). Check IMAP credentials and spam folder.");
