@@ -222,10 +222,16 @@ class AFKBot {
     this.setStatus("renewing");
 
     try {
-      // Step 1: click Send Code button — record timestamp BEFORE clicking
-      // so IMAP only looks for emails that arrived after this moment
+      // Step 1: wait for Turnstile to be solved BEFORE clicking Send Code.
+      // The renewal modal embeds a Turnstile widget; clicking too early sends
+      // no verification request and no OTP email is triggered.
+      this.log("Waiting for Turnstile challenge to be solved...");
+      await this._waitForTurnstile(60000);
+      this.log("Turnstile solved. Clicking 'Send Code' button...");
+
+      // Record timestamp right before clicking — IMAP will only accept emails
+      // received after this moment (prevents stale OTP reuse)
       const sendCodeTime = Date.now();
-      this.log("Clicking 'Send Code' button...");
       await this._clickButtonByText("Send Code");
       this.log("Send Code clicked. Waiting for OTP email...");
 
@@ -295,6 +301,37 @@ class AFKBot {
     } catch (_) {}
 
     throw new Error(`Could not find button with text: "${text}"`);
+  }
+
+  async _waitForTurnstile(timeout = 60000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const solved = await this.page.evaluate(() => {
+        // Strategy 1: cf-turnstile-response hidden input has a token value
+        const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+        for (const inp of inputs) {
+          if (inp.value && inp.value.length > 10) return true;
+        }
+        // Strategy 2: Turnstile iframe shows a success checkbox state
+        const iframes = document.querySelectorAll('iframe[src*="challenges.cloudflare.com/turnstile"]');
+        if (iframes.length === 0) {
+          // No Turnstile widget present on this page — skip wait
+          return true;
+        }
+        // Strategy 3: check for a success indicator in the widget wrapper
+        const wrapper = document.querySelector('.cf-turnstile, [data-cf-turnstile]');
+        if (wrapper) {
+          const successEl = wrapper.querySelector('[data-state="solved"], .cf-success');
+          if (successEl) return true;
+        }
+        return false;
+      }).catch(() => true); // if page crashed or eval failed, proceed
+
+      if (solved) return;
+      await this._sleep(1000);
+    }
+    // Non-fatal: if we can't confirm, proceed anyway (library may have already solved it)
+    this.log("Turnstile wait timed out — proceeding anyway.", "warn");
   }
 
   async _getOTPErrorText() {
