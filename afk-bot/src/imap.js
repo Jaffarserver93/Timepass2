@@ -2,8 +2,7 @@ const { ImapFlow } = require("imapflow");
 
 /**
  * Returns the UIDNEXT value of INBOX — the UID that will be assigned to the
- * NEXT arriving message. Call this BEFORE clicking "Send Code" so that any
- * email with uid >= this value is guaranteed to be a fresh, new message.
+ * NEXT arriving message. Call this BEFORE clicking "Send Code".
  */
 async function getUIDNext({ host, port, user, pass }) {
   const portNum = parseInt(port);
@@ -28,10 +27,11 @@ async function getUIDNext({ host, port, user, pass }) {
 }
 
 /**
- * Waits for a new OTP email with UID >= minUid (captured before clicking
- * "Send Code"). Retries every 5 seconds for up to `timeout` ms.
+ * Single attempt: connect fresh, search last 10 min, find bytenut OTP email.
+ * Returns the OTP string or null if not found.
+ * Ported directly from the reference open-source dashboard implementation.
  */
-async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com", timeout = 120000, minUid = null, sentAfter = null }) {
+async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
   const portNum = parseInt(port);
   const secure = portNum === 993 || portNum === 465;
 
@@ -40,138 +40,90 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
     auth: { user, pass },
     logger: false,
     tls: { rejectUnauthorized: false },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
   });
 
-  await client.connect();
-
   try {
+    await client.connect();
     const lock = await client.getMailboxLock("INBOX");
+
     try {
-      // IMAP SINCE is day-granularity only — use yesterday to limit result set,
-      // real filtering is done by UID below
-      const searchAfter = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const deadline = Date.now() + timeout;
+      // Search ALL emails in the last 10 minutes — no from filter.
+      // Reference uses no from filter; some servers don't index FROM correctly.
+      const since = new Date(Date.now() - 10 * 60 * 1000);
+      const allRecent = await client.search({ since });
 
-      while (Date.now() < deadline) {
-        const uids = await client.search(
-          { from: sender, since: searchAfter },
-          { uid: true }
-        ).catch(() => []);
+      if (!allRecent || allRecent.length === 0) return null;
 
-        if (uids && uids.length > 0) {
-          // Process newest first (highest UID = most recently received)
-          const sorted = [...uids].sort((a, b) => b - a);
+      // Newest first, check up to 10 most recent
+      const toCheck = [...allRecent].reverse().slice(0, 10);
 
-          for (const uid of sorted) {
-            // Primary guard: skip any UID that existed before we clicked "Send Code"
-            if (minUid != null && uid < minUid) {
-              continue;
-            }
+      for (const seq of toCheck) {
+        // fetchOne with NO third argument — exactly as the reference does it.
+        // Passing { uid: true } as third arg causes silent failures on some servers.
+        const msg = await client.fetchOne(String(seq), {
+          envelope: true,
+          source: true,
+          internalDate: true,
+        });
+        if (!msg) continue;
 
-            // Use for-await fetch (proven reliable) to get envelope + source.
-            // fetchOne can silently return null on some IMAP servers — avoid it.
-            let subject = "";
-            let raw = "";
-            try {
-              for await (const msg of client.fetch(`${uid}`, { envelope: true, source: true }, { uid: true })) {
-                subject = msg.envelope?.subject ?? "";
-                raw = msg.source ? msg.source.toString("utf8") : "";
-                break; // only one message per UID
-              }
-            } catch (_) {
-              continue;
-            }
+        const fromName    = (msg.envelope?.from?.[0]?.name    ?? "").toLowerCase();
+        const fromAddr    = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
+        const subject     = msg.envelope?.subject ?? "";
+        const raw         = msg.source?.toString() ?? "";
 
-            // Strategy A: OTP is in the subject line (fastest, most reliable)
-            // e.g. "Verification Code 095009"
-            const subjectOtp = _extractDigits(subject);
-            if (subjectOtp) return subjectOtp;
+        // Only process bytenut.com emails (same logic as reference does for blazenode)
+        const isBytenut =
+          fromAddr.includes("bytenut") ||
+          fromName.includes("bytenut") ||
+          subject.toLowerCase().includes("bytenut") ||
+          subject.toLowerCase().includes("verification") ||
+          raw.toLowerCase().includes("bytenut");
 
-            // Strategy B: Parse the HTML body near VERIFICATION CODE section
-            const bodyOtp = _extractOTP(raw);
-            if (bodyOtp) return bodyOtp;
-          }
+        if (!isBytenut) continue;
+
+        // Time guard: skip emails that arrived before we clicked Send Code
+        if (sentAfter && msg.internalDate) {
+          const arrived = new Date(msg.internalDate).getTime();
+          if (arrived < sentAfter - 15000) continue; // 15s tolerance
         }
 
-        // NOOP keeps the connection alive AND tells the server to flush any
-        // pending new-message notifications before the next search
-        await client.noop().catch(() => {});
-        await sleep(5000);
+        // Subject first — bytenut sends "Verification Code 095009" in subject
+        const subjectMatch = subject.match(/\b(\d{6})\b/);
+        if (subjectMatch) return subjectMatch[1];
+
+        // Body fallback — simple scan of full raw source (reference approach)
+        const bodyMatch = raw.match(/\b(\d{6})\b/);
+        if (bodyMatch) return bodyMatch[1];
       }
 
-      throw new Error("OTP email not received within timeout (2 minutes). Check IMAP credentials and spam folder.");
+      return null;
     } finally {
       lock.release();
     }
+  } catch (_) {
+    return null;
   } finally {
     await client.logout().catch(() => {});
   }
 }
 
 /**
- * Extract a 6-digit code from a short string (like an email subject).
- * Subject lines: "894654 is your verification code" or "Your code: 894654"
+ * Retries _tryFetchOTP every 5 seconds until OTP is found or timeout expires.
+ * Fresh IMAP connection on every attempt — avoids stale-connection/cache issues.
  */
-function _extractDigits(text) {
-  if (!text) return null;
-  const m = text.match(/\b(\d{6})\b/);
-  return m ? m[1] : null;
-}
+async function fetchOTP({ host, port, user, pass, timeout = 120000, sentAfter = null, minUid = null }) {
+  const deadline = Date.now() + timeout;
 
-/**
- * Extract OTP from raw email source.
- * Strategy: find the VERIFICATION CODE section first, then grab the 6 digits.
- * This prevents matching static numbers (user IDs, tracking IDs) elsewhere in
- * the email template.
- */
-function _extractOTP(raw) {
-  if (!raw) return null;
-
-  // Decode quoted-printable soft line breaks and encoded chars
-  const decoded = raw
-    .replace(/=\r?\n/g, "")
-    .replace(/=[0-9A-Fa-f]{2}/g, (m) => String.fromCharCode(parseInt(m.slice(1), 16)))
-    .replace(/\u00a0/g, " ");
-
-  // Strip HTML tags and decode common entities to get clean plain text
-  const plain = decoded
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&[a-z]+;/gi, " ")
-    .replace(/\s+/g, " ");
-
-  // Priority 1: code appears directly after "VERIFICATION CODE" label
-  // Matches: "VERIFICATION CODE 894654" or "VERIFICATION CODE\n8 9 4 6 5 4"
-  const vcMatch = plain.match(/VERIFICATION\s+CODE\s+([\d\s]{6,17})/i);
-  if (vcMatch) {
-    const digits = vcMatch[1].replace(/\s/g, "");
-    if (digits.length === 6) return digits;
-    // Handle spaced digits: "8 9 4 6 5 4" → "894654"
-    const compact = digits.slice(0, 6);
-    if (/^\d{6}$/.test(compact)) return compact;
+  while (Date.now() < deadline) {
+    const otp = await _tryFetchOTP({ host, port, user, pass, sentAfter });
+    if (otp) return otp;
+    await sleep(5000);
   }
 
-  // Priority 2: 6 spaced single digits immediately after a keyword
-  // e.g. "code 8 9 4 6 5 4" or "code is 8 9 4 6 5 4"
-  const spacedMatch = plain.match(/(?:code|otp|token)\s+(?:is\s+)?(\d(?:\s\d){5})/i);
-  if (spacedMatch) {
-    return spacedMatch[1].replace(/\s/g, "");
-  }
-
-  // Priority 3: any isolated 6-digit group, but ONLY if preceded/followed by
-  // verification-related context within 120 chars
-  const ctxMatch = plain.match(/(?:verif|renew|code|otp)[^]{0,120}(?<!\d)(\d{6})(?!\d)/i);
-  if (ctxMatch) return ctxMatch[1];
-
-  // Priority 4: last-resort — take the 6-digit group that appears AFTER any
-  // colon or "code" keyword, avoiding static IDs in URLs/headers
-  const afterColon = plain.match(/[Cc]ode[^:]{0,20}:\s*(\d{6})\b/);
-  if (afterColon) return afterColon[1];
-
-  return null;
+  throw new Error("OTP email not received within timeout (2 minutes). Check IMAP credentials and spam folder.");
 }
 
 /**

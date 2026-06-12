@@ -1,21 +1,35 @@
 ---
 name: AFK Bot IMAP OTP fetching
-description: OTP email from bytenut has spaced digits; three-strategy regex + quoted-printable decode needed
+description: Definitive working pattern for IMAP OTP fetching — ported from reference open-source dashboard
 ---
 
-The renewal OTP email from `noreply@bytenut.com` displays the code as **`7 6 8 2 3 3`** (single spaces between each digit), not `768233`. A simple `\b(\d{6})\b` regex misses this.
+## Working pattern (reference port)
 
-**Three-strategy extraction in `_extractOTP()`:**
-1. `\b(\d{6})\b` — six consecutive digits (no spaces)
-2. `(\d[\s]{0,2}){6}` — digits separated by spaces → strip spaces → verify length 6
-3. Wide fallback `(\d\s?){6}` → strip whitespace → verify length 6
+`fetchOTP` in `imap.js` now matches the reference dashboard exactly:
 
-**Quoted-printable decode** runs first — emails often encode `=3D`, soft line breaks (`=\r\n`), and non-breaking spaces (`\u00a0`). Without this, the regex may fail to match even when the code is present.
+1. **Fresh connect/disconnect every 5s retry** — never hold a persistent connection.
+   Persistent connections don't receive new-message notifications without IDLE/NOOP,
+   so the mailbox state appears frozen and newly arrived emails are invisible.
 
-**IMAP approach — definitive UID-based filtering:** `getUIDNext()` (exported) connects and returns `client.mailbox.uidNext` — the UID that will be assigned to the NEXT message. Call this in bot.js BEFORE Turnstile wait and pass result as `minUid` to `fetchOTP`. In `fetchOTP`, skip any `uid < minUid` — these existed before the Send Code click. This is immune to clock skew, timezone differences, and IMAP `SINCE` day-granularity limitations. `sentAfter` (timestamp) is kept as a secondary fallback. Also waits 5 seconds after click before first IMAP search.
+2. **`client.fetchOne(String(seq), { envelope: true, source: true, internalDate: true })`**
+   — NO third `{ uid: true }` argument. Passing `{ uid: true }` as third arg causes
+   silent `null` returns on many IMAP servers (confirmed broken on bytenut's mail server).
 
-**OTP extraction improvements (2026-06-12):** Strips HTML tags before matching (important — code is inside HTML email). Strategy 1 uses negative lookbehind/lookahead `(?<!\d)(\d{6})(?!\d)` to avoid matching within 7+ digit sequences (message IDs, dates). Strategy 2 requires exactly `\d( \d){5}` pattern. Strategy 3 anchors to keyword context ("code", "verification", "otp") within 80 chars.
+3. **`client.search({ since: last 10 min })`** — NO from filter in IMAP search.
+   Some servers don't index FROM correctly; filter in JS by checking from/subject/raw
+   for "bytenut" or "verification".
 
-**`testIMAP()`** — exposed as `POST /api/test-imap`; opens INBOX, reports message count. Used in dashboard "Test Connection" button.
+4. **OTP extraction: `subject.match(/\b(\d{6})\b/)` first, then `raw.match(/\b(\d{6})\b/)`**
+   — simple scan of the full raw source works. Subject line contains code directly:
+   `"Verification Code 095009"`. No complex HTML parsing needed.
 
-**How to apply:** If OTP extraction ever fails again, first check the raw email body format and add a new strategy to `_extractOTP()`.
+5. **Time guard**: `msg.internalDate` compared to `sentAfter` (15s tolerance) to skip
+   emails that arrived before clicking Send Code.
+
+**Why UID baseline alone wasn't enough:** `getUIDNext()` still exists and is called in
+bot.js before the Turnstile wait, but it's now only used as a reference — the internalDate
+check replaces it as the primary time guard. The real fix was the connection/fetchOne pattern.
+
+**How to apply:** If OTP ever breaks again, first confirm the connection pattern matches
+the reference above. The `{ uid: true }` third arg to fetchOne is the most likely culprit.
+`testIMAP()` exposed as `POST /api/test-imap` for connection verification.
