@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>AFK Bot Dashboard</title>
+  <style>
+    :root {
+      --bg: #0a0b0f;
+      --surface: #12141a;
+      --surface2: #1a1d26;
+      --border: #23273a;
+      --accent: #6c63ff;
+      --accent2: #4ade80;
+      --danger: #f87171;
+      --warn: #fbbf24;
+      --text: #e2e8f0;
+      --text2: #8892a4;
+      --text3: #4a5568;
+      --radius: 14px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      width: 34px;
+      height: 34px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .header-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+
+    .header-sub {
+      font-size: 11px;
+      color: var(--text2);
+      margin-top: 1px;
+    }
+
+    .ws-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 10px;
+      font-size: 11px;
+      color: var(--text2);
+    }
+
+    .ws-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text3);
+      transition: background 0.3s;
+    }
+
+    .ws-dot.connected { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
+    .ws-dot.error { background: var(--danger); }
+
+    /* ── Main ── */
+    .main {
+      padding: 16px;
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* ── Status Bar ── */
+    .status-bar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (min-width: 600px) {
+      .status-bar { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    .stat-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text3);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-value.green { color: var(--accent2); }
+    .stat-value.purple { color: var(--accent); }
+    .stat-value.yellow { color: var(--warn); }
+    .stat-value.red { color: var(--danger); }
+
+    /* ── Status Pill ── */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+
+    .status-pill.running { background: rgba(74,222,128,.12); border-color: rgba(74,222,128,.3); color: var(--accent2); }
+    .status-pill.stopped { background: rgba(248,113,113,.1); border-color: rgba(248,113,113,.25); color: var(--danger); }
+    .status-pill.launching,
+    .status-pill.logging_in,
+    .status-pill.navigating { background: rgba(108,99,255,.12); border-color: rgba(108,99,255,.3); color: var(--accent); }
+    .status-pill.error { background: rgba(248,113,113,.15); border-color: rgba(248,113,113,.4); color: var(--danger); }
+
+    .pulse {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.75); }
+    }
+
+    /* ── Controls ── */
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      flex: 1;
+      min-width: 100px;
+      padding: 11px 16px;
+      border: none;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.18s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      letter-spacing: 0.1px;
+    }
+
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    .btn-start {
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      color: #fff;
+      box-shadow: 0 4px 16px rgba(108,99,255,0.35);
+    }
+    .btn-start:hover:not(:disabled) { box-shadow: 0 6px 20px rgba(108,99,255,0.5); transform: translateY(-1px); }
+
+    .btn-stop {
+      background: rgba(248,113,113,.12);
+      border: 1px solid rgba(248,113,113,.3);
+      color: var(--danger);
+    }
+    .btn-stop:hover:not(:disabled) { background: rgba(248,113,113,.2); }
+
+    .btn-reload {
+      background: rgba(251,191,36,.1);
+      border: 1px solid rgba(251,191,36,.25);
+      color: var(--warn);
+    }
+    .btn-reload:hover:not(:disabled) { background: rgba(251,191,36,.18); }
+
+    /* ── Live Preview ── */
+    .preview-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .live-badge {
+      background: rgba(248,113,113,.15);
+      border: 1px solid rgba(248,113,113,.3);
+      color: var(--danger);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+      animation: livePulse 2s infinite;
+    }
+
+    @keyframes livePulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    .fps-counter {
+      font-size: 11px;
+      color: var(--text3);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .screenshot-wrap {
+      position: relative;
+      background: #000;
+      aspect-ratio: 16/10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #screenshot {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .screenshot-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      color: var(--text3);
+    }
+
+    .screenshot-placeholder svg { opacity: 0.4; }
+    .screenshot-placeholder p { font-size: 13px; }
+
+    /* ── Logs ── */
+    .log-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .log-body {
+      height: 220px;
+      overflow-y: auto;
+      padding: 10px;
+      font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+      font-size: 11.5px;
+      line-height: 1.7;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      padding: 2px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+
+    .log-time {
+      color: var(--text3);
+      flex-shrink: 0;
+      font-size: 10.5px;
+      padding-top: 1px;
+    }
+
+    .log-level {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      height: fit-content;
+      margin-top: 2px;
+    }
+
+    .log-level.info { background: rgba(108,99,255,.2); color: #a78bfa; }
+    .log-level.warn { background: rgba(251,191,36,.15); color: var(--warn); }
+    .log-level.error { background: rgba(248,113,113,.15); color: var(--danger); }
+
+    .log-msg { color: var(--text); flex: 1; word-break: break-word; }
+
+    /* ── Info card ── */
+    .info-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+
+    .info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .info-row:last-child { border-bottom: none; }
+
+    .info-key {
+      font-size: 12px;
+      color: var(--text2);
+      font-weight: 500;
+    }
+
+    .info-val {
+      font-size: 12px;
+      color: var(--text);
+      font-weight: 600;
+      text-align: right;
+      max-width: 60%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .info-val a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .reload-progress {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .reload-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #a78bfa);
+      border-radius: 2px;
+      transition: width 0.5s linear;
+    }
+
+    .empty-log {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text3);
+      font-size: 12px;
+    }
+
+    @media (min-width: 700px) {
+      .main { padding: 20px; }
+      .controls .btn { flex: none; min-width: 120px; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-left">
+    <div class="logo">🤖</div>
+    <div>
+      <div class="header-title">AFK Bot</div>
+      <div class="header-sub">bytenut.com</div>
+    </div>
+  </div>
+  <div class="ws-badge">
+    <div class="ws-dot" id="wsDot"></div>
+    <span id="wsLabel">Connecting…</span>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div class="stat-card">
+      <div class="stat-label">Status</div>
+      <div id="statusPill" class="status-pill stopped">
+        <span class="pulse"></span>
+        <span id="statusText">Stopped</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Uptime</div>
+      <div class="stat-value green" id="uptime">00:00:00</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Reloads</div>
+      <div class="stat-value purple" id="reloadCount">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Next Reload</div>
+      <div class="stat-value yellow" id="nextReload">—</div>
+      <div class="reload-progress">
+        <div class="reload-progress-bar" id="reloadBar" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button class="btn btn-start" id="btnStart" onclick="startBot()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      Start Bot
+    </button>
+    <button class="btn btn-stop" id="btnStop" onclick="stopBot()" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
+      Stop Bot
+    </button>
+    <button class="btn btn-reload" id="btnReload" onclick="manualReload()" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-3"/></svg>
+      Reload Now
+    </button>
+  </div>
+
+  <!-- Live Preview -->
+  <div class="preview-card">
+    <div class="card-header">
+      <div class="card-title">
+        Live Preview
+        <span class="live-badge" id="liveBadge" style="display:none">● LIVE</span>
+      </div>
+      <span class="fps-counter" id="fpsCounter">—</span>
+    </div>
+    <div class="screenshot-wrap">
+      <img id="screenshot" src="" alt="" style="display:none" />
+      <div class="screenshot-placeholder" id="placeholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+          <rect x="2" y="4" width="20" height="15" rx="2"/>
+          <path d="M8 20h8M12 19v1"/>
+        </svg>
+        <p>Start the bot to see live preview</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bot Info -->
+  <div class="info-card">
+    <div class="card-header" style="padding:0 0 10px 0; margin-bottom:0;">
+      <div class="card-title">Bot Configuration</div>
+    </div>
+    <div class="info-row">
+      <span class="info-key">Login URL</span>
+      <span class="info-val"><a href="https://www.bytenut.com/auth/login" target="_blank">bytenut.com/auth/login</a></span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">AFK Target</span>
+      <span class="info-val"><a href="https://www.bytenut.com/free-gamepanel/87079436" target="_blank">gamepanel/87079436</a></span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">Reload Interval</span>
+      <span class="info-val">Every 60 seconds</span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">Screenshot Rate</span>
+      <span class="info-val">~10 fps (100ms)</span>
+    </div>
+  </div>
+
+  <!-- Logs -->
+  <div class="log-card">
+    <div class="card-header">
+      <div class="card-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        Live Logs
+      </div>
+      <button onclick="clearLogs()" style="background:none;border:none;color:var(--text3);font-size:11px;cursor:pointer;padding:2px 6px;border-radius:4px;transition:color .2s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">Clear</button>
+    </div>
+    <div class="log-body" id="logBody">
+      <div class="empty-log">No logs yet — start the bot</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let ws = null;
+  let botStatus = "stopped";
+  let startTime = null;
+  let uptimeTimer = null;
+  let lastScreenshotTs = 0;
+  let fpsFrames = 0;
+  let fpsTimer = null;
+  let reloadCountVal = 0;
+  let lastReloadTime = null;
+  let reloadTimerInterval = null;
+  const RELOAD_EVERY = 60000;
+
+  // WebSocket
+  function connectWS() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}`);
+
+    ws.onopen = () => {
+      setWS("connected");
+    };
+
+    ws.onclose = () => {
+      setWS("disconnected");
+      setTimeout(connectWS, 2000);
+    };
+
+    ws.onerror = () => setWS("error");
+
+    ws.onmessage = (e) => {
+      const { type, data } = JSON.parse(e.data);
+      if (type === "screenshot") handleScreenshot(data);
+      else if (type === "status") handleStatus(data);
+      else if (type === "log") appendLog(data);
+    };
+  }
+
+  function setWS(state) {
+    const dot = document.getElementById("wsDot");
+    const label = document.getElementById("wsLabel");
+    dot.className = "ws-dot " + (state === "connected" ? "connected" : state === "error" ? "error" : "");
+    label.textContent = state === "connected" ? "Connected" : state === "error" ? "Error" : "Reconnecting…";
+  }
+
+  // Screenshot
+  function handleScreenshot(data) {
+    const img = document.getElementById("screenshot");
+    const placeholder = document.getElementById("placeholder");
+    img.src = "data:image/jpeg;base64," + data.image;
+    img.style.display = "block";
+    placeholder.style.display = "none";
+    document.getElementById("liveBadge").style.display = "";
+    fpsFrames++;
+  }
+
+  // FPS Counter
+  fpsTimer = setInterval(() => {
+    document.getElementById("fpsCounter").textContent = fpsFrames > 0 ? `${fpsFrames} fps` : "—";
+    fpsFrames = 0;
+  }, 1000);
+
+  // Status
+  function handleStatus(data) {
+    botStatus = data.status;
+    reloadCountVal = data.reloadCount || 0;
+    document.getElementById("reloadCount").textContent = reloadCountVal;
+
+    const pill = document.getElementById("statusPill");
+    const txt = document.getElementById("statusText");
+    pill.className = "status-pill " + data.status;
+
+    const labels = {
+      running: "Running",
+      stopped: "Stopped",
+      launching: "Launching…",
+      logging_in: "Logging In…",
+      navigating: "Navigating…",
+      error: "Error",
+    };
+    txt.textContent = labels[data.status] || data.status;
+
+    const isRunning = data.status === "running";
+    const isWorking = ["running", "launching", "logging_in", "navigating"].includes(data.status);
+
+    document.getElementById("btnStart").disabled = isWorking;
+    document.getElementById("btnStop").disabled = !isWorking;
+    document.getElementById("btnReload").disabled = !isRunning;
+
+    if (data.startTime && !startTime) {
+      startTime = data.startTime;
+      startUptimeTimer();
+      lastReloadTime = data.startTime;
+      startReloadTimer();
+    }
+
+    if (!isRunning && data.status === "stopped") {
+      startTime = null;
+      clearInterval(uptimeTimer);
+      clearInterval(reloadTimerInterval);
+      document.getElementById("uptime").textContent = "00:00:00";
+      document.getElementById("nextReload").textContent = "—";
+      document.getElementById("reloadBar").style.width = "0%";
+      document.getElementById("liveBadge").style.display = "none";
+    }
+
+    if (data.lastError) appendLog({ ts: new Date().toISOString(), level: "error", msg: data.lastError });
+  }
+
+  function startUptimeTimer() {
+    clearInterval(uptimeTimer);
+    uptimeTimer = setInterval(() => {
+      if (!startTime) return;
+      const sec = Math.floor((Date.now() - startTime) / 1000);
+      const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+      const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+      const s = String(sec % 60).padStart(2, "0");
+      document.getElementById("uptime").textContent = `${h}:${m}:${s}`;
+    }, 1000);
+  }
+
+  function startReloadTimer() {
+    clearInterval(reloadTimerInterval);
+    lastReloadTime = Date.now();
+    reloadTimerInterval = setInterval(() => {
+      const elapsed = Date.now() - lastReloadTime;
+      const remaining = Math.max(0, RELOAD_EVERY - elapsed);
+      const pct = Math.min(100, (elapsed / RELOAD_EVERY) * 100);
+      document.getElementById("nextReload").textContent = `${Math.ceil(remaining / 1000)}s`;
+      document.getElementById("reloadBar").style.width = pct + "%";
+      if (remaining <= 100) {
+        lastReloadTime = Date.now();
+      }
+    }, 500);
+  }
+
+  // Logs
+  let logCount = 0;
+  const MAX_DISPLAY_LOGS = 100;
+
+  function appendLog(entry) {
+    const body = document.getElementById("logBody");
+    const empty = body.querySelector(".empty-log");
+    if (empty) empty.remove();
+
+    if (logCount >= MAX_DISPLAY_LOGS) {
+      body.removeChild(body.firstChild);
+    }
+
+    const div = document.createElement("div");
+    div.className = "log-entry";
+
+    const time = new Date(entry.ts).toLocaleTimeString();
+    div.innerHTML = `
+      <span class="log-time">${time}</span>
+      <span class="log-level ${entry.level}">${entry.level.toUpperCase()}</span>
+      <span class="log-msg">${escapeHtml(entry.msg)}</span>
+    `;
+    body.appendChild(div);
+    body.scrollTop = body.scrollHeight;
+    logCount++;
+  }
+
+  function clearLogs() {
+    const body = document.getElementById("logBody");
+    body.innerHTML = '<div class="empty-log">Logs cleared</div>';
+    logCount = 0;
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // Controls
+  async function startBot() {
+    document.getElementById("btnStart").disabled = true;
+    await fetch("/api/start", { method: "POST" });
+  }
+
+  async function stopBot() {
+    document.getElementById("btnStop").disabled = true;
+    await fetch("/api/stop", { method: "POST" });
+  }
+
+  async function manualReload() {
+    document.getElementById("btnReload").disabled = true;
+    await fetch("/api/reload", { method: "POST" });
+    setTimeout(() => {
+      if (botStatus === "running") document.getElementById("btnReload").disabled = false;
+    }, 1500);
+  }
+
+  // Init
+  connectWS();
+  fetch("/api/status").then(r => r.json()).then(handleStatus).catch(() => {});
+  fetch("/api/logs").then(r => r.json()).then(logs => logs.forEach(appendLog)).catch(() => {});
+</script>
+</body>
+</html>

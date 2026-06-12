@@ -1,0 +1,17 @@
+{
+  "name": "afk-bot",
+  "version": "1.0.0",
+  "description": "AFK Bot for bytenut.com with live dashboard",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "install-browsers": "node node_modules/puppeteer/install.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "puppeteer": "^22.10.0",
+    "ws": "^8.17.1"
+  }
+}
