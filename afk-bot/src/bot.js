@@ -1,4 +1,5 @@
 const { connect } = require("puppeteer-real-browser");
+const { fetchOTP } = require("./imap");
 
 const LOGIN_URL = "https://www.bytenut.com/auth/login";
 const TARGET_URL = "https://www.bytenut.com/free-gamepanel/87079436";
@@ -6,9 +7,11 @@ const RELOAD_INTERVAL_MS = 60 * 1000;
 const SCREENSHOT_INTERVAL_MS = 500;
 
 class AFKBot {
-  constructor({ email, password, onScreenshot, onLog, onStatusChange }) {
+  constructor({ email, password, imapConfig, onScreenshot, onLog, onStatusChange }) {
     this.email = email;
     this.password = password;
+    this.imapConfig = imapConfig || null;
+
     this.onScreenshot = onScreenshot || (() => {});
     this.onLog = onLog || (() => {});
     this.onStatusChange = onStatusChange || (() => {});
@@ -98,11 +101,15 @@ class AFKBot {
 
       await this.page.goto(TARGET_URL, { waitUntil: "networkidle2", timeout: 60000 });
       await this._waitForCloudflare();
-      this.log("AFK target page loaded. Bot is now active!");
+      this.log("AFK target page loaded. Checking server status...");
+
+      // Check and auto-renew if server is paused
+      await this._checkAndRenewIfPaused();
 
       this.startTime = Date.now();
       this.reloadCount = 0;
       this.setStatus("running");
+      this.log("Bot is now active!");
 
       this._startScreenshotLoop();
       this._startReloadLoop();
@@ -113,6 +120,8 @@ class AFKBot {
       await this.stop();
     }
   }
+
+  // ── Cloudflare ─────────────────────────────────────────────────────────────
 
   async _waitForCloudflare(timeout = 30000) {
     const deadline = Date.now() + timeout;
@@ -130,28 +139,25 @@ class AFKBot {
     }
   }
 
+  // ── Login ──────────────────────────────────────────────────────────────────
+
   async _fillLogin() {
     this.log("Waiting for login form fields...");
 
-    // Email field: type="text" placeholder="Username" (Element UI / Vue SPA)
     await this.page.waitForSelector('input.el-input__inner[placeholder="Username"]', { timeout: 15000 });
 
     const emailField = await this.page.$('input.el-input__inner[placeholder="Username"]');
     if (!emailField) throw new Error("Could not find Username input field");
-
     await emailField.click({ clickCount: 3 });
     await this.page.keyboard.type(this.email, { delay: 50 });
     this.log("Email/username entered.");
 
-    // Password field: type="password" placeholder="Password" (Element UI)
     const passField = await this.page.$('input.el-input__inner[placeholder="Password"]');
     if (!passField) throw new Error("Could not find Password input field");
-
     await passField.click({ clickCount: 3 });
     await this.page.keyboard.type(this.password, { delay: 50 });
     this.log("Password entered. Looking for submit button...");
 
-    // Find the login submit button — Vue SPA so we click the button, not press Enter
     const submitBtn = await this.page.$(
       'button[type="submit"], button.el-button--primary, button[class*="login" i], button[class*="submit" i]'
     ).catch(() => null);
@@ -166,7 +172,6 @@ class AFKBot {
       await passField.press("Enter");
     }
 
-    // SPA: don't use waitForNavigation — wait for URL to change or error to appear
     this.log("Waiting for login response...");
     await this._waitForLoginResult(loginUrl, 20000);
 
@@ -178,15 +183,9 @@ class AFKBot {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       await this._sleep(800);
-
       const url = this.page.url();
+      if (url !== loginUrl && !url.includes("/auth/login") && !url.includes("/login")) return;
 
-      // Success: URL changed away from login
-      if (url !== loginUrl && !url.includes("/auth/login") && !url.includes("/login")) {
-        return;
-      }
-
-      // Failure: error message visible on page
       const errEl = await this.page.$(
         '.el-message--error, .el-notification--error, [class*="error-msg"], [class*="login-error"], .el-alert--error'
       ).catch(() => null);
@@ -197,6 +196,112 @@ class AFKBot {
     }
     throw new Error("Login timed out — credentials may be incorrect or site is slow");
   }
+
+  // ── Server Paused / Auto-Renew ─────────────────────────────────────────────
+
+  async _checkAndRenewIfPaused() {
+    await this._sleep(2000); // let SPA render
+    const banner = await this.page.$(".expired-warning-banner").catch(() => null);
+    if (!banner) {
+      this.log("Server is running normally. No renewal needed.");
+      return;
+    }
+
+    this.log("⚠ Server Paused banner detected! Starting auto-renewal...", "warn");
+    this.setStatus("renewing");
+
+    try {
+      // Step 1: click Send Code button
+      this.log("Clicking 'Send Code' button...");
+      await this._clickButtonByText("Send Code");
+      this.log("Send Code clicked. Waiting for OTP email...");
+
+      // Step 2: fetch OTP from email
+      if (!this.imapConfig || !this.imapConfig.host) {
+        throw new Error("IMAP credentials not set in .env — cannot fetch OTP. Set IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS.");
+      }
+
+      const otp = await fetchOTP({
+        ...this.imapConfig,
+        sender: "noreply@bytenut.com",
+        timeout: 120000,
+      });
+      this.log(`OTP received: ${otp}`);
+
+      // Step 3: type OTP into code field
+      await this._sleep(1000);
+      const codeField = await this.page.$('input.el-input__inner[placeholder="6-digit code"]');
+      if (!codeField) throw new Error("Could not find 6-digit code input field");
+      await codeField.click({ clickCount: 3 });
+      await this.page.keyboard.type(otp, { delay: 80 });
+      this.log("OTP entered into code field.");
+
+      // Step 4: click Extend button
+      await this._sleep(500);
+      this.log("Clicking 'Extend' button...");
+      await this._clickButtonByText("Extend");
+      this.log("Extend clicked! Waiting for renewal confirmation...");
+
+      // Step 5: wait for banner to disappear or success indicator
+      await this._waitForRenewalSuccess();
+      this.log("✅ Server renewed successfully!", "info");
+
+    } catch (err) {
+      this.log(`Renewal failed: ${err.message}`, "error");
+      throw err;
+    }
+  }
+
+  async _clickButtonByText(text) {
+    // Try multiple strategies to find and click a button by its visible text
+    const found = await this.page.evaluate((btnText) => {
+      const all = [...document.querySelectorAll("button, span.el-button, a")];
+      const el = all.find((e) => e.textContent.trim().includes(btnText));
+      if (el) { el.click(); return true; }
+      return false;
+    }, text);
+
+    if (found) return;
+
+    // Fallback: XPath
+    try {
+      const [xBtn] = await this.page.$x(`//button[contains(., '${text}')] | //span[contains(@class,'el-button')][contains(., '${text}')]`);
+      if (xBtn) { await xBtn.click(); return; }
+    } catch (_) {}
+
+    throw new Error(`Could not find button with text: "${text}"`);
+  }
+
+  async _waitForRenewalSuccess(timeout = 30000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      await this._sleep(1500);
+      // Banner gone = success
+      const banner = await this.page.$(".expired-warning-banner").catch(() => null);
+      if (!banner) return;
+      // Success indicator on page
+      const success = await this.page.$(".el-icon-circle-check, [class*='success']").catch(() => null);
+      if (success) return;
+    }
+    // Non-fatal — continue even if we can't confirm
+    this.log("Could not confirm renewal success, continuing anyway...", "warn");
+  }
+
+  // ── Scroll ─────────────────────────────────────────────────────────────────
+
+  async scroll(direction, amount = 300) {
+    if (!this.page || !this.running) return false;
+    try {
+      const px = direction === "up" ? -amount : amount;
+      await this.page.evaluate((y) => window.scrollBy({ top: y, behavior: "smooth" }), px);
+      return true;
+    } catch (err) {
+      this.log(`Scroll failed: ${err.message}`, "warn");
+      return false;
+    }
+  }
+
+  // ── Screenshot & Reload loops ──────────────────────────────────────────────
 
   _startScreenshotLoop() {
     this.screenshotLoop = setInterval(async () => {
@@ -215,6 +320,10 @@ class AFKBot {
         this.log("Reloading AFK target page...");
         await this.page.reload({ waitUntil: "networkidle2", timeout: 20000 });
         await this._waitForCloudflare(15000);
+        // Check for paused banner after every reload too
+        await this._checkAndRenewIfPaused().catch((e) =>
+          this.log(`Auto-renew after reload failed: ${e.message}`, "warn")
+        );
         this.reloadCount++;
         this.log(`Page reloaded. Total reloads: ${this.reloadCount}`);
         this.onStatusChange(this.getState());
@@ -223,6 +332,8 @@ class AFKBot {
       }
     }, RELOAD_INTERVAL_MS);
   }
+
+  // ── Stop / Reload ──────────────────────────────────────────────────────────
 
   async stop() {
     this.running = false;
@@ -242,6 +353,7 @@ class AFKBot {
     try {
       await this.page.reload({ waitUntil: "networkidle2", timeout: 20000 });
       await this._waitForCloudflare(15000);
+      await this._checkAndRenewIfPaused().catch(() => {});
       this.reloadCount++;
       this.log("Manual reload triggered.");
       this.onStatusChange(this.getState());

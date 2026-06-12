@@ -230,6 +230,15 @@
     }
     .btn-reload:hover:not(:disabled) { background: rgba(251,191,36,.18); }
 
+    .btn-scroll {
+      background: rgba(148,163,184,.08);
+      border: 1px solid rgba(148,163,184,.2);
+      color: var(--text2);
+    }
+    .btn-scroll:hover:not(:disabled) { background: rgba(148,163,184,.15); color: var(--text); }
+
+    .status-pill.renewing { background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.3); color: var(--warn); }
+
     /* ── Live Preview ── */
     .preview-card {
       background: var(--surface);
@@ -482,6 +491,18 @@
     </button>
   </div>
 
+  <!-- Scroll Controls -->
+  <div class="controls">
+    <button class="btn btn-scroll" id="btnScrollUp" onclick="scrollPage('up')" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
+      Scroll Up
+    </button>
+    <button class="btn btn-scroll" id="btnScrollDown" onclick="scrollPage('down')" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+      Scroll Down
+    </button>
+  </div>
+
   <!-- Live Preview -->
   <div class="preview-card">
     <div class="card-header">
@@ -637,16 +658,19 @@
       launching: "Launching…",
       logging_in: "Logging In…",
       navigating: "Navigating…",
+      renewing: "Renewing…",
       error: "Error",
     };
     txt.textContent = labels[data.status] || data.status;
 
     const isRunning = data.status === "running";
-    const isWorking = ["running", "launching", "logging_in", "navigating"].includes(data.status);
+    const isWorking = ["running", "launching", "logging_in", "navigating", "renewing"].includes(data.status);
 
     document.getElementById("btnStart").disabled = isWorking;
     document.getElementById("btnStop").disabled = !isWorking;
     document.getElementById("btnReload").disabled = !isRunning;
+    document.getElementById("btnScrollUp").disabled = !isRunning;
+    document.getElementById("btnScrollDown").disabled = !isRunning;
 
     if (data.startTime && !startTime) {
       startTime = data.startTime;
@@ -749,6 +773,22 @@
     setTimeout(() => {
       if (botStatus === "running") document.getElementById("btnReload").disabled = false;
     }, 1500);
+  }
+
+  async function scrollPage(direction) {
+    const btnId = direction === "up" ? "btnScrollUp" : "btnScrollDown";
+    const btn = document.getElementById(btnId);
+    btn.disabled = true;
+    try {
+      await fetch("/api/scroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ direction, amount: 300 }),
+      });
+    } catch (_) {}
+    setTimeout(() => {
+      if (botStatus === "running") btn.disabled = false;
+    }, 600);
   }
 
   // Init

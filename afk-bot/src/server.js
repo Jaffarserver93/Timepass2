@@ -15,6 +15,13 @@ if (!EMAIL || !PASSWORD) {
   process.exit(1);
 }
 
+const imapConfig = {
+  host: process.env.IMAP_HOST || "",
+  port: process.env.IMAP_PORT || "993",
+  user: process.env.IMAP_USER || "",
+  pass: process.env.IMAP_PASS || "",
+};
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -35,8 +42,8 @@ function broadcast(type, data) {
 const bot = new AFKBot({
   email: EMAIL,
   password: PASSWORD,
+  imapConfig,
   onScreenshot: (buf) => {
-    // Send as raw binary frame — avoids base64 corruption over WebSocket
     const frame = Buffer.from(buf);
     wss.clients.forEach((client) => {
       if (client.readyState === 1) client.send(frame, { binary: true });
@@ -52,13 +59,10 @@ const bot = new AFKBot({
   },
 });
 
-app.get("/api/status", (req, res) => {
-  res.json(bot.getState());
-});
+// ── REST API ────────────────────────────────────────────────────────────────
 
-app.get("/api/logs", (req, res) => {
-  res.json(logs);
-});
+app.get("/api/status", (req, res) => res.json(bot.getState()));
+app.get("/api/logs", (req, res) => res.json(logs));
 
 app.post("/api/start", async (req, res) => {
   if (bot.running) return res.json({ ok: false, message: "Bot already running" });
@@ -76,12 +80,21 @@ app.post("/api/reload", async (req, res) => {
   res.json({ ok, message: ok ? "Page reloaded" : "Bot not running" });
 });
 
-wss.on("connection", (ws) => {
-  const state = bot.getState();
-  ws.send(JSON.stringify({ type: "status", data: state }));
-  const recentLogs = logs.slice(-50);
-  recentLogs.forEach((l) => ws.send(JSON.stringify({ type: "log", data: l })));
+app.post("/api/scroll", async (req, res) => {
+  const direction = req.body.direction === "up" ? "up" : "down";
+  const amount = parseInt(req.body.amount) || 300;
+  const ok = await bot.scroll(direction, amount);
+  res.json({ ok, message: ok ? `Scrolled ${direction}` : "Bot not running or page unavailable" });
 });
+
+// ── WebSocket ───────────────────────────────────────────────────────────────
+
+wss.on("connection", (ws) => {
+  ws.send(JSON.stringify({ type: "status", data: bot.getState() }));
+  logs.slice(-50).forEach((l) => ws.send(JSON.stringify({ type: "log", data: l })));
+});
+
+// ── Start ───────────────────────────────────────────────────────────────────
 
 server.listen(PORT, () => {
   console.log(`\n┌─────────────────────────────────────────┐`);
@@ -90,19 +103,12 @@ server.listen(PORT, () => {
   console.log(`└─────────────────────────────────────────┘\n`);
   console.log(`  Target: https://www.bytenut.com/free-gamepanel/87079436`);
   console.log(`  Auto-reload every: 60 seconds`);
-  console.log(`  Screenshot interval: 100ms\n`);
+  console.log(`  Screenshot interval: 500ms`);
+  console.log(`  IMAP host: ${imapConfig.host || "(not set — OTP auto-renew disabled)"}\n`);
 
   console.log("Auto-starting bot...");
   bot.start().catch((err) => console.error("Bot start error:", err));
 });
 
-process.on("SIGINT", async () => {
-  console.log("\nShutting down...");
-  await bot.stop();
-  process.exit(0);
-});
-
-process.on("SIGTERM", async () => {
-  await bot.stop();
-  process.exit(0);
-});
+process.on("SIGINT", async () => { console.log("\nShutting down..."); await bot.stop(); process.exit(0); });
+process.on("SIGTERM", async () => { await bot.stop(); process.exit(0); });

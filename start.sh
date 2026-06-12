@@ -96,13 +96,22 @@ fi
 echo -e "${GREEN}✓ .env loaded (email: ${EMAIL_VAL})${NC}"
 
 # ── Install npm packages ───────────────────────────────────
-if [ ! -d "node_modules" ] || [ ! -d "node_modules/puppeteer-real-browser" ]; then
+if [ ! -d "node_modules" ] || [ ! -d "node_modules/puppeteer-real-browser" ] || [ ! -d "node_modules/imapflow" ]; then
   echo ""
   echo -e "${YELLOW}Installing npm packages (first run may take a few minutes)...${NC}"
   npm install
   echo -e "${GREEN}✓ Packages installed${NC}"
 else
   echo -e "${GREEN}✓ node_modules present${NC}"
+fi
+
+# ── Show IMAP status ───────────────────────────────────────
+IMAP_HOST_VAL=$(grep -E "^IMAP_HOST=" .env | cut -d= -f2-)
+if [ -z "$IMAP_HOST_VAL" ] || [ "$IMAP_HOST_VAL" = "imap.gmail.com" ] && grep -qE "^IMAP_USER=your@gmail.com" .env 2>/dev/null; then
+  echo -e "${YELLOW}⚠  IMAP not configured — auto-renew on 'Server Paused' disabled${NC}"
+  echo -e "   Set IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS in afk-bot/.env to enable"
+else
+  echo -e "${GREEN}✓ IMAP configured (${IMAP_HOST_VAL}) — auto-renew enabled${NC}"
 fi
 
 # ── Install Chrome for puppeteer-real-browser ─────────────
