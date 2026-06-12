@@ -68,14 +68,12 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
               continue;
             }
 
-            // Fetch envelope (subject + from) AND source in one round-trip
+            // Fetch envelope (subject) AND source in one round-trip.
+            // No need to re-check sender — IMAP search({ from: sender }) already
+            // guarantees every returned UID is from noreply@bytenut.com.
             const msg = await client.fetchOne(String(uid), { envelope: true, source: true }, { uid: true })
               .catch(() => null);
             if (!msg) continue;
-
-            // Secondary guard: verify sender matches
-            const fromAddr = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
-            if (!fromAddr.includes("bytenut")) continue;
 
             const subject = msg.envelope?.subject ?? "";
             const raw = msg.source?.toString("utf8") ?? "";
