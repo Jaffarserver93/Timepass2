@@ -133,7 +133,7 @@ class AFKBot {
   async _fillLogin() {
     this.log("Waiting for login form fields...");
 
-    // Email field: type="text" placeholder="Username" class="el-input__inner"
+    // Email field: type="text" placeholder="Username" (Element UI / Vue SPA)
     await this.page.waitForSelector('input.el-input__inner[placeholder="Username"]', { timeout: 15000 });
 
     const emailField = await this.page.$('input.el-input__inner[placeholder="Username"]');
@@ -143,30 +143,59 @@ class AFKBot {
     await this.page.keyboard.type(this.email, { delay: 50 });
     this.log("Email/username entered.");
 
-    // Password field: type="password" placeholder="Password" class="el-input__inner"
+    // Password field: type="password" placeholder="Password" (Element UI)
     const passField = await this.page.$('input.el-input__inner[placeholder="Password"]');
     if (!passField) throw new Error("Could not find Password input field");
 
     await passField.click({ clickCount: 3 });
     await this.page.keyboard.type(this.password, { delay: 50 });
-    this.log("Password entered. Submitting...");
+    this.log("Password entered. Looking for submit button...");
 
-    await Promise.all([
-      this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }),
-      passField.press("Enter"),
-    ]);
+    // Find the login submit button — Vue SPA so we click the button, not press Enter
+    const submitBtn = await this.page.$(
+      'button[type="submit"], button.el-button--primary, button[class*="login" i], button[class*="submit" i]'
+    ).catch(() => null);
 
-    const url = this.page.url();
-    if (url.includes("/auth/login") || url.includes("/login")) {
-      const errEl = await this.page.$('[class*="error" i], [class*="alert" i], [role="alert"]').catch(() => null);
-      if (errEl) {
-        const errText = await errEl.evaluate((el) => el.textContent.trim()).catch(() => "");
-        throw new Error(`Login failed: ${errText || "still on login page after submit"}`);
-      }
-      throw new Error("Login failed: still on login page after submit");
+    const loginUrl = this.page.url();
+
+    if (submitBtn) {
+      this.log("Clicking submit button...");
+      await submitBtn.click();
+    } else {
+      this.log("No submit button found, pressing Enter...");
+      await passField.press("Enter");
     }
 
+    // SPA: don't use waitForNavigation — wait for URL to change or error to appear
+    this.log("Waiting for login response...");
+    await this._waitForLoginResult(loginUrl, 20000);
+
+    const url = this.page.url();
     this.log(`Login successful. URL: ${url}`);
+  }
+
+  async _waitForLoginResult(loginUrl, timeout = 20000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      await this._sleep(800);
+
+      const url = this.page.url();
+
+      // Success: URL changed away from login
+      if (url !== loginUrl && !url.includes("/auth/login") && !url.includes("/login")) {
+        return;
+      }
+
+      // Failure: error message visible on page
+      const errEl = await this.page.$(
+        '.el-message--error, .el-notification--error, [class*="error-msg"], [class*="login-error"], .el-alert--error'
+      ).catch(() => null);
+      if (errEl) {
+        const errText = await errEl.evaluate((el) => el.textContent.trim()).catch(() => "Login error");
+        throw new Error(`Login failed: ${errText}`);
+      }
+    }
+    throw new Error("Login timed out — credentials may be incorrect or site is slow");
   }
 
   _startScreenshotLoop() {
