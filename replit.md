@@ -1,45 +1,80 @@
-# [Project name]
+# ByteNut AFK Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A self-contained AFK bot for bytenut.com with a live dashboard, real-browser Cloudflare bypass, WebSocket screenshot streaming, and automatic server renewal via IMAP OTP.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+```bash
+./start.sh          # Install deps + start bot (run from project root)
+```
+
+- Runs the bot server at `http://localhost:<PORT>` (default `3000`)
+- Both the dashboard and API are served on the **same port**
+- Bot auto-starts on launch; dashboard is mobile-friendly
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- **Runtime:** Node.js (CommonJS), no build step
+- **Bot automation:** `puppeteer-real-browser` — real Chrome fingerprint, Cloudflare Turnstile bypass
+- **Server:** Express 4 + `ws` WebSocket (single port for API + dashboard)
+- **IMAP:** `imapflow` — fetches OTP emails for auto-renewal
+- **Dashboard:** Vanilla HTML/CSS/JS served as static files
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+```
+afk-bot/
+├── src/
+│   ├── server.js     — Express + WebSocket server, all API routes
+│   ├── bot.js        — AFKBot class (login, renewal, scroll, screenshot)
+│   └── imap.js       — IMAP OTP fetcher + test-connection helper
+├── public/
+│   └── index.html    — Full dashboard UI (single file)
+├── .env              — Credentials (copy from .env.example)
+├── .env.example      — Template with all required vars
+└── package.json
+start.sh              — Root-level setup + launch script
+```
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **Binary WebSocket frames for screenshots** — screenshots are sent as raw JPEG bytes (`ws.send(buf, { binary: true })`), not base64 JSON, to avoid corruption on large payloads. The client uses `URL.createObjectURL(blob)`.
+- **Single-port design** — Express serves both the static dashboard and REST API; WebSocket upgrades on the same HTTP server. No proxy or CORS config needed.
+- **Renewal is non-fatal** — if OTP auto-renewal fails (wrong IMAP creds, timeout, etc.) the bot logs a warning and continues running; it does not crash.
+- **Vue SPA login handling** — bytenut.com is a Vue SPA (Element UI). Login submits via button click (not Enter), and success is detected by polling for URL change rather than `waitForNavigation`.
+- **Xvfb on Linux** — `puppeteer-real-browser` needs a virtual display on headless Linux servers; `start.sh` auto-installs Xvfb via apt/yum/pacman.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- **AFK bot** — logs into bytenut.com, navigates to the game panel, and keeps the session alive by reloading the target page every 60 seconds
+- **Live dashboard** — real-time screenshot preview at ~2 fps over WebSocket, uptime counter, reload countdown, live log feed
+- **Auto-renewal** — detects "Server Paused" banner, clicks Send Code, fetches OTP from Gmail via IMAP, enters code, clicks Extend — fully automated
+- **Controls** — Start / Stop / Reload Now / Scroll Up / Scroll Down buttons; IMAP connection test
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Both API and dashboard must run on the same port
+- `start.sh` must be at the project root (not inside `afk-bot/`)
+- Screenshot live preview at 500ms intervals (2 fps)
+- Browser viewport: 1280 × 720
+- Dashboard UI: mobile-friendly, premium dark design
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- **Gmail App Password required** — standard Gmail password won't work for IMAP if 2FA is on. Generate one at Google Account → Security → App Passwords.
+- **IMAP OTP regex handles spaced digits** — the renewal email shows `7 6 8 2 3 3` (spaces between digits). The fetcher strips spaces before returning the code.
+- **Login fields use Element UI** — selectors are `input.el-input__inner[placeholder="Username"]` and `input.el-input__inner[placeholder="Password"]`, not `input[type="email"]`.
+- **Delete `node_modules/` to force reinstall** if a new dependency is added and `start.sh` doesn't pick it up.
 
-## Pointers
+## Required .env variables
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+```
+EMAIL=your@bytenut-email.com
+PASSWORD=yourpassword
+PORT=3000
+
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_USER=your@gmail.com
+IMAP_PASS=your-gmail-app-password
+```

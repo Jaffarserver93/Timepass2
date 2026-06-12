@@ -1,0 +1,5 @@
+- [AFK Bot architecture](afk-bot-architecture.md) — standalone Node.js app in `afk-bot/`, single-port Express + WebSocket, no build step
+- [Login selectors](afk-bot-login.md) — bytenut.com uses Element UI Vue SPA; specific selectors and SPA login flow quirks
+- [Screenshot streaming](afk-bot-screenshots.md) — binary WS frames (not base64 JSON) to avoid corruption; client uses createObjectURL
+- [IMAP OTP](afk-bot-imap.md) — OTP email has spaced digits "7 6 8 2 3 3"; three-strategy regex + quoted-printable decode required
+- [Renewal non-fatal](afk-bot-renewal.md) — renewal errors must be caught at call site so bot continues running on failure
