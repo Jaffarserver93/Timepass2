@@ -72,10 +72,10 @@ class AFKBot {
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
-          "--window-size=1280,800",
+          "--window-size=1280,720",
         ],
         connectOption: {
-          defaultViewport: { width: 1280, height: 800 },
+          defaultViewport: { width: 1280, height: 720 },
         },
       });
 
