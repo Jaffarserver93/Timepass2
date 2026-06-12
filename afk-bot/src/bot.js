@@ -20,6 +20,7 @@ class AFKBot {
     this.browser = null;
     this.page = null;
     this.running = false;
+    this.renewing = false;   // mutex: true while OTP renewal is in progress
     this.startTime = null;
     this.reloadCount = 0;
     this.screenshotLoop = null;
@@ -203,6 +204,12 @@ class AFKBot {
   // ── Server Paused / Auto-Renew ─────────────────────────────────────────────
 
   async _checkAndRenewIfPaused() {
+    // Guard: only one renewal at a time
+    if (this.renewing) {
+      this.log("Renewal already in progress — skipping duplicate check.", "info");
+      return;
+    }
+
     await this._sleep(2000); // let SPA render
     const banner = await this.page.$(".expired-warning-banner").catch(() => null);
     if (!banner) {
@@ -210,6 +217,7 @@ class AFKBot {
       return;
     }
 
+    this.renewing = true;
     this.log("⚠ Server Paused banner detected! Starting auto-renewal...", "warn");
     this.setStatus("renewing");
 
@@ -263,6 +271,9 @@ class AFKBot {
     } catch (err) {
       this.log(`Renewal failed: ${err.message}`, "error");
       throw err;
+    } finally {
+      // Always release the mutex so future renewal attempts can proceed
+      this.renewing = false;
     }
   }
 
@@ -343,14 +354,24 @@ class AFKBot {
   _startReloadLoop() {
     this.reloadLoop = setInterval(async () => {
       if (!this.page || !this.running) return;
+
+      // Skip reload entirely while renewal is in progress — reloading the page
+      // would interrupt OTP entry and cause the renewal to fail
+      if (this.renewing) {
+        this.log("Renewal in progress — skipping scheduled page reload.", "info");
+        return;
+      }
+
       try {
         this.log("Reloading AFK target page...");
         await this.page.reload({ waitUntil: "networkidle2", timeout: 20000 });
         await this._waitForCloudflare(15000);
-        // Check for paused banner after every reload too
+
+        // Check for paused banner after reload — mutex inside will guard duplicates
         await this._checkAndRenewIfPaused().catch((e) =>
           this.log(`Auto-renew after reload failed: ${e.message}`, "warn")
         );
+
         this.reloadCount++;
         this.log(`Page reloaded. Total reloads: ${this.reloadCount}`);
         this.onStatusChange(this.getState());
@@ -377,6 +398,10 @@ class AFKBot {
 
   async forceReload() {
     if (!this.page || !this.running) return false;
+    if (this.renewing) {
+      this.log("Renewal in progress — manual reload blocked to avoid interrupting OTP flow.", "warn");
+      return false;
+    }
     try {
       await this.page.reload({ waitUntil: "networkidle2", timeout: 20000 });
       await this._waitForCloudflare(15000);
