@@ -1,4 +1,4 @@
-const puppeteer = require("puppeteer");
+const { connect } = require("puppeteer-real-browser");
 
 const LOGIN_URL = "https://www.bytenut.com/auth/login";
 const TARGET_URL = "https://www.bytenut.com/free-gamepanel/87079436";
@@ -33,7 +33,12 @@ class AFKBot {
 
   setStatus(status) {
     this.status = status;
-    this.onStatusChange({ status, startTime: this.startTime, reloadCount: this.reloadCount, lastError: this.lastError });
+    this.onStatusChange({
+      status,
+      startTime: this.startTime,
+      reloadCount: this.reloadCount,
+      lastError: this.lastError,
+    });
   }
 
   getState() {
@@ -55,70 +60,44 @@ class AFKBot {
     this.running = true;
     this.lastError = null;
     this.setStatus("launching");
-    this.log("Launching browser...");
+    this.log("Launching real browser (Cloudflare bypass enabled)...");
 
     try {
-      this.browser = await puppeteer.launch({
-        headless: true,
+      const result = await connect({
+        headless: "auto",
+        turnstile: true,
+        fingerprint: true,
+        disableXvfb: false,
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
-          "--disable-accelerated-2d-canvas",
-          "--no-first-run",
-          "--no-zygote",
-          "--disable-gpu",
           "--window-size=1280,800",
         ],
-        defaultViewport: { width: 1280, height: 800 },
+        connectOption: {
+          defaultViewport: { width: 1280, height: 800 },
+        },
       });
 
-      this.page = await this.browser.newPage();
-
-      await this.page.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-      );
+      this.browser = result.browser;
+      this.page = result.page;
 
       this.log("Browser launched. Navigating to login page...");
       this.setStatus("logging_in");
 
-      await this.page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 30000 });
-      this.log("Login page loaded. Filling credentials...");
+      await this.page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
+      this.log("Login page loaded. Waiting for Cloudflare check to pass...");
 
-      await this.page.waitForSelector('input[type="email"], input[name="email"], input[placeholder*="mail" i], input[id*="email" i]', { timeout: 10000 });
+      await this._waitForCloudflare();
+      this.log("Cloudflare passed. Filling credentials...");
 
-      const emailSelector = await this.page.$('input[type="email"]') ||
-        await this.page.$('input[name="email"]') ||
-        await this.page.$('input[placeholder*="mail" i]') ||
-        await this.page.$('input[id*="email" i]');
-
-      if (!emailSelector) throw new Error("Could not find email input field");
-
-      await this.page.click('input[type="email"], input[name="email"], input[placeholder*="mail" i], input[id*="email" i]');
-      await this.page.keyboard.down("Control");
-      await this.page.keyboard.press("a");
-      await this.page.keyboard.up("Control");
-      await this.page.type('input[type="email"], input[name="email"], input[placeholder*="mail" i], input[id*="email" i]', this.email, { delay: 40 });
-
-      const passField = await this.page.$('input[type="password"]');
-      if (!passField) throw new Error("Could not find password input field");
-      await passField.click();
-      await passField.type(this.password, { delay: 40 });
-
-      this.log("Credentials filled. Submitting login form...");
-
-      await Promise.all([
-        this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }),
-        this.page.keyboard.press("Enter"),
-      ]);
-
-      const currentUrl = this.page.url();
-      this.log(`Login successful. Current URL: ${currentUrl}`);
+      await this._fillLogin();
 
       this.log(`Navigating to AFK target: ${TARGET_URL}`);
       this.setStatus("navigating");
 
-      await this.page.goto(TARGET_URL, { waitUntil: "networkidle2", timeout: 30000 });
+      await this.page.goto(TARGET_URL, { waitUntil: "networkidle2", timeout: 60000 });
+      await this._waitForCloudflare();
       this.log("AFK target page loaded. Bot is now active!");
 
       this.startTime = Date.now();
@@ -127,13 +106,79 @@ class AFKBot {
 
       this._startScreenshotLoop();
       this._startReloadLoop();
-
     } catch (err) {
       this.lastError = err.message;
       this.log(`Bot error: ${err.message}`, "error");
       this.setStatus("error");
       await this.stop();
     }
+  }
+
+  async _waitForCloudflare(timeout = 30000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const url = this.page.url();
+      const title = await this.page.title().catch(() => "");
+      const isCF =
+        title.includes("Just a moment") ||
+        title.includes("Checking your browser") ||
+        url.includes("challenge") ||
+        url.includes("cdn-cgi");
+      if (!isCF) return;
+      this.log("Waiting for Cloudflare challenge to resolve...");
+      await this._sleep(2000);
+    }
+  }
+
+  async _fillLogin() {
+    const emailSelectors = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[placeholder*="mail" i]',
+      'input[id*="email" i]',
+    ];
+
+    let emailField = null;
+    for (const sel of emailSelectors) {
+      emailField = await this.page.$(sel).catch(() => null);
+      if (emailField) break;
+    }
+
+    if (!emailField) {
+      await this.page.waitForSelector(emailSelectors.join(", "), { timeout: 15000 });
+      for (const sel of emailSelectors) {
+        emailField = await this.page.$(sel).catch(() => null);
+        if (emailField) break;
+      }
+    }
+
+    if (!emailField) throw new Error("Could not find email input field");
+
+    await emailField.click({ clickCount: 3 });
+    await emailField.type(this.email, { delay: 45 });
+
+    const passField = await this.page.$('input[type="password"]');
+    if (!passField) throw new Error("Could not find password input field");
+    await passField.click({ clickCount: 3 });
+    await passField.type(this.password, { delay: 45 });
+
+    this.log("Credentials filled. Submitting...");
+
+    await Promise.all([
+      this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }),
+      passField.press("Enter"),
+    ]);
+
+    const url = this.page.url();
+    if (url.includes("/auth/login") || url.includes("/login")) {
+      const errEl = await this.page.$('[class*="error" i], [class*="alert" i], [role="alert"]').catch(() => null);
+      if (errEl) {
+        const errText = await errEl.evaluate((el) => el.textContent.trim()).catch(() => "");
+        throw new Error(`Login failed: ${errText || "still on login page after submit"}`);
+      }
+    }
+
+    this.log(`Login successful. URL: ${url}`);
   }
 
   _startScreenshotLoop() {
@@ -152,6 +197,7 @@ class AFKBot {
       try {
         this.log("Reloading AFK target page...");
         await this.page.reload({ waitUntil: "networkidle2", timeout: 20000 });
+        await this._waitForCloudflare(15000);
         this.reloadCount++;
         this.log(`Page reloaded. Total reloads: ${this.reloadCount}`);
         this.onStatusChange(this.getState());
@@ -178,6 +224,7 @@ class AFKBot {
     if (!this.page || !this.running) return false;
     try {
       await this.page.reload({ waitUntil: "networkidle2", timeout: 20000 });
+      await this._waitForCloudflare(15000);
       this.reloadCount++;
       this.log("Manual reload triggered.");
       this.onStatusChange(this.getState());
@@ -186,6 +233,10 @@ class AFKBot {
       this.log(`Manual reload failed: ${err.message}`, "warn");
       return false;
     }
+  }
+
+  _sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 }
 
