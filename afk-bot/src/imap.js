@@ -74,7 +74,7 @@ async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
         const subject     = msg.envelope?.subject ?? "";
         const raw         = msg.source?.toString() ?? "";
 
-        // Only process bytenut.com emails (same logic as reference does for blazenode)
+        // Only process bytenut.com emails
         const isBytenut =
           fromAddr.includes("bytenut") ||
           fromName.includes("bytenut") ||
@@ -90,12 +90,24 @@ async function _tryFetchOTP({ host, port, user, pass, sentAfter }) {
           if (arrived < sentAfter - 15000) continue; // 15s tolerance
         }
 
-        // Subject first — bytenut sends "Verification Code 095009" in subject
-        const subjectMatch = subject.match(/\b(\d{6})\b/);
-        if (subjectMatch) return subjectMatch[1];
+        // Decode quoted-printable and strip HTML to get clean plain text.
+        // IMPORTANT: bytenut email has CSS color codes like #212529 and #495057
+        // in <style> blocks — simple raw.match(/\d{6}/) always hits those first.
+        // We must strip HTML first and then anchor the search to "Verification Code".
+        const decoded = raw
+          .replace(/=\r?\n/g, "")
+          .replace(/=[0-9A-Fa-f]{2}/g, m => String.fromCharCode(parseInt(m.slice(1), 16)));
+        const plain = decoded
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/gi, " ")
+          .replace(/\s+/g, " ");
 
-        // Body fallback — simple scan of full raw source (reference approach)
-        const bodyMatch = raw.match(/\b(\d{6})\b/);
+        // Primary: "Verification Code 095009" — the OTP always follows this label
+        const vcMatch = plain.match(/verification\s+code\s+(\d{6})/i);
+        if (vcMatch) return vcMatch[1];
+
+        // Fallback: any 6-digit sequence NOT preceded by # (excludes CSS hex colors)
+        const bodyMatch = plain.match(/(?<!#)\b(\d{6})\b/);
         if (bodyMatch) return bodyMatch[1];
       }
 
