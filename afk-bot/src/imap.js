@@ -28,20 +28,15 @@ async function getUIDNext({ host, port, user, pass }) {
 }
 
 /**
- * Waits for a new OTP email from `sender` with UID >= minUid (captured before
- * clicking Send Code). Retries every 5 seconds for up to `timeout` ms.
- *
- * minUid is the primary guard — it is UID-based and immune to clock skew.
- * sentAfter is a secondary sanity check (INTERNALDATE >= sentAfter).
+ * Waits for a new OTP email with UID >= minUid (captured before clicking
+ * "Send Code"). Retries every 5 seconds for up to `timeout` ms.
  */
 async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com", timeout = 120000, minUid = null, sentAfter = null }) {
   const portNum = parseInt(port);
   const secure = portNum === 993 || portNum === 465;
 
   const client = new ImapFlow({
-    host,
-    port: portNum,
-    secure,
+    host, port: portNum, secure,
     auth: { user, pass },
     logger: false,
     tls: { rejectUnauthorized: false },
@@ -52,8 +47,8 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
   try {
     const lock = await client.getMailboxLock("INBOX");
     try {
-      // IMAP SINCE is day-granularity only (RFC 3501), so use today's date
-      // purely to limit the result set — real filtering is done by UID below.
+      // IMAP SINCE is day-granularity only — use yesterday to limit result set,
+      // real filtering is done by UID below
       const searchAfter = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const deadline = Date.now() + timeout;
 
@@ -68,26 +63,31 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
           const sorted = [...uids].sort((a, b) => b - a);
 
           for (const uid of sorted) {
-            // Primary guard: skip any email that existed before we clicked
-            // "Send Code". Only UIDs >= minUid are from this session.
+            // Primary guard: skip any UID that existed before we clicked "Send Code"
             if (minUid != null && uid < minUid) {
               continue;
             }
 
-            // Secondary guard: INTERNALDATE must be >= sentAfter (handles
-            // the rare case where UIDNEXT wasn't available)
-            if (sentAfter) {
-              const internalDate = await _fetchInternalDate(client, uid);
-              if (internalDate && internalDate.getTime() < (sentAfter - 10000)) {
-                continue;
-              }
-            }
+            // Fetch envelope (subject + from) AND source in one round-trip
+            const msg = await client.fetchOne(String(uid), { envelope: true, source: true }, { uid: true })
+              .catch(() => null);
+            if (!msg) continue;
 
-            const source = await _fetchSource(client, uid);
-            if (!source) continue;
+            // Secondary guard: verify sender matches
+            const fromAddr = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
+            if (!fromAddr.includes("bytenut")) continue;
 
-            const otp = _extractOTP(source);
-            if (otp) return otp;
+            const subject = msg.envelope?.subject ?? "";
+            const raw = msg.source?.toString("utf8") ?? "";
+
+            // Strategy A: OTP is often in the subject line directly
+            // e.g. "894654 is your verification code" or "Verification: 894654"
+            const subjectOtp = _extractDigits(subject);
+            if (subjectOtp) return subjectOtp;
+
+            // Strategy B: Parse the HTML body — look near VERIFICATION CODE section
+            const bodyOtp = _extractOTP(raw);
+            if (bodyOtp) return bodyOtp;
           }
         }
 
@@ -104,6 +104,72 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
 }
 
 /**
+ * Extract a 6-digit code from a short string (like an email subject).
+ * Subject lines: "894654 is your verification code" or "Your code: 894654"
+ */
+function _extractDigits(text) {
+  if (!text) return null;
+  const m = text.match(/\b(\d{6})\b/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Extract OTP from raw email source.
+ * Strategy: find the VERIFICATION CODE section first, then grab the 6 digits.
+ * This prevents matching static numbers (user IDs, tracking IDs) elsewhere in
+ * the email template.
+ */
+function _extractOTP(raw) {
+  if (!raw) return null;
+
+  // Decode quoted-printable soft line breaks and encoded chars
+  const decoded = raw
+    .replace(/=\r?\n/g, "")
+    .replace(/=[0-9A-Fa-f]{2}/g, (m) => String.fromCharCode(parseInt(m.slice(1), 16)))
+    .replace(/\u00a0/g, " ");
+
+  // Strip HTML tags and decode common entities to get clean plain text
+  const plain = decoded
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&[a-z]+;/gi, " ")
+    .replace(/\s+/g, " ");
+
+  // Priority 1: code appears directly after "VERIFICATION CODE" label
+  // Matches: "VERIFICATION CODE 894654" or "VERIFICATION CODE\n8 9 4 6 5 4"
+  const vcMatch = plain.match(/VERIFICATION\s+CODE\s+([\d\s]{6,17})/i);
+  if (vcMatch) {
+    const digits = vcMatch[1].replace(/\s/g, "");
+    if (digits.length === 6) return digits;
+    // Handle spaced digits: "8 9 4 6 5 4" → "894654"
+    const compact = digits.slice(0, 6);
+    if (/^\d{6}$/.test(compact)) return compact;
+  }
+
+  // Priority 2: 6 spaced single digits immediately after a keyword
+  // e.g. "code 8 9 4 6 5 4" or "code is 8 9 4 6 5 4"
+  const spacedMatch = plain.match(/(?:code|otp|token)\s+(?:is\s+)?(\d(?:\s\d){5})/i);
+  if (spacedMatch) {
+    return spacedMatch[1].replace(/\s/g, "");
+  }
+
+  // Priority 3: any isolated 6-digit group, but ONLY if preceded/followed by
+  // verification-related context within 120 chars
+  const ctxMatch = plain.match(/(?:verif|renew|code|otp)[^]{0,120}(?<!\d)(\d{6})(?!\d)/i);
+  if (ctxMatch) return ctxMatch[1];
+
+  // Priority 4: last-resort — take the 6-digit group that appears AFTER any
+  // colon or "code" keyword, avoiding static IDs in URLs/headers
+  const afterColon = plain.match(/[Cc]ode[^:]{0,20}:\s*(\d{6})\b/);
+  if (afterColon) return afterColon[1];
+
+  return null;
+}
+
+/**
  * Test IMAP connection — returns { ok, message }
  */
 async function testIMAP({ host, port, user, pass }) {
@@ -115,9 +181,7 @@ async function testIMAP({ host, port, user, pass }) {
   const secure = portNum === 993 || portNum === 465;
 
   const client = new ImapFlow({
-    host,
-    port: portNum,
-    secure,
+    host, port: portNum, secure,
     auth: { user, pass },
     logger: false,
     tls: { rejectUnauthorized: false },
@@ -135,55 +199,6 @@ async function testIMAP({ host, port, user, pass }) {
   } catch (err) {
     return { ok: false, message: `IMAP error: ${err.message}` };
   }
-}
-
-async function _fetchInternalDate(client, uid) {
-  try {
-    for await (const msg of client.fetch(`${uid}`, { internalDate: true }, { uid: true })) {
-      if (msg.internalDate) return new Date(msg.internalDate);
-    }
-  } catch (_) {}
-  return null;
-}
-
-async function _fetchSource(client, uid) {
-  try {
-    for await (const msg of client.fetch(`${uid}`, { source: true }, { uid: true })) {
-      if (msg.source) return msg.source.toString("utf8");
-    }
-  } catch (_) {}
-  return null;
-}
-
-function _extractOTP(raw) {
-  // Decode quoted-printable (=3D etc) and line-breaks
-  const decoded = raw
-    .replace(/=\r?\n/g, "")
-    .replace(/=[0-9A-Fa-f]{2}/g, (m) => String.fromCharCode(parseInt(m.slice(1), 16)))
-    .replace(/\u00a0/g, " ");
-
-  // Strip HTML tags to get plain text before matching
-  const plain = decoded.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
-
-  // Strategy 1: six consecutive digits NOT part of a longer number
-  const m1 = plain.match(/(?<!\d)(\d{6})(?!\d)/);
-  if (m1) return m1[1];
-
-  // Strategy 2: digits separated by single spaces (e.g. "5 7 1 4 3 0")
-  const m2 = plain.match(/(?<!\d)\d( \d){5}(?!\d)/);
-  if (m2) {
-    const digits = m2[0].replace(/ /g, "");
-    if (digits.length === 6) return digits;
-  }
-
-  // Strategy 3: digits near verification keywords
-  const ctxMatch = plain.match(/(?:code|verification|otp)[^\d]{0,80}((?:\d[\s]{0,2}){6})/i);
-  if (ctxMatch) {
-    const digits = ctxMatch[1].replace(/\s/g, "");
-    if (digits.length === 6) return digits;
-  }
-
-  return null;
 }
 
 function sleep(ms) {
