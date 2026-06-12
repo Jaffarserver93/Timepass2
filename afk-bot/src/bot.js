@@ -268,9 +268,13 @@ class AFKBot {
       await this.page.keyboard.type(otp, { delay: 80 });
       this.log("OTP entered into code field.");
 
-      // Step 4: click Extend button
-      await this._sleep(500);
-      this.log("Clicking 'Extend' button...");
+      // Step 4: wait for Turnstile to be solved again before clicking Extend.
+      // The token from Step 1 expires in ~5 minutes. By the time OTP is fetched
+      // and entered, the widget has often reset and requires a fresh solve.
+      this.log("Waiting for Turnstile to re-solve before clicking Extend...");
+      await this._waitForTurnstile(60000);
+      this.log("Turnstile ready. Clicking 'Extend' button...");
+      await this._sleep(300);
       await this._clickButtonByText("Extend");
       this.log("Extend clicked! Waiting for renewal confirmation...");
 
