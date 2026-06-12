@@ -68,27 +68,34 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
               continue;
             }
 
-            // Fetch envelope (subject) AND source in one round-trip.
-            // No need to re-check sender — IMAP search({ from: sender }) already
-            // guarantees every returned UID is from noreply@bytenut.com.
-            const msg = await client.fetchOne(String(uid), { envelope: true, source: true }, { uid: true })
-              .catch(() => null);
-            if (!msg) continue;
+            // Use for-await fetch (proven reliable) to get envelope + source.
+            // fetchOne can silently return null on some IMAP servers — avoid it.
+            let subject = "";
+            let raw = "";
+            try {
+              for await (const msg of client.fetch(`${uid}`, { envelope: true, source: true }, { uid: true })) {
+                subject = msg.envelope?.subject ?? "";
+                raw = msg.source ? msg.source.toString("utf8") : "";
+                break; // only one message per UID
+              }
+            } catch (_) {
+              continue;
+            }
 
-            const subject = msg.envelope?.subject ?? "";
-            const raw = msg.source?.toString("utf8") ?? "";
-
-            // Strategy A: OTP is often in the subject line directly
-            // e.g. "894654 is your verification code" or "Verification: 894654"
+            // Strategy A: OTP is in the subject line (fastest, most reliable)
+            // e.g. "Verification Code 095009"
             const subjectOtp = _extractDigits(subject);
             if (subjectOtp) return subjectOtp;
 
-            // Strategy B: Parse the HTML body — look near VERIFICATION CODE section
+            // Strategy B: Parse the HTML body near VERIFICATION CODE section
             const bodyOtp = _extractOTP(raw);
             if (bodyOtp) return bodyOtp;
           }
         }
 
+        // NOOP keeps the connection alive AND tells the server to flush any
+        // pending new-message notifications before the next search
+        await client.noop().catch(() => {});
         await sleep(5000);
       }
 
