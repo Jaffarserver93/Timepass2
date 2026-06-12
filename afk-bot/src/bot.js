@@ -214,7 +214,9 @@ class AFKBot {
     this.setStatus("renewing");
 
     try {
-      // Step 1: click Send Code button
+      // Step 1: click Send Code button — record timestamp BEFORE clicking
+      // so IMAP only looks for emails that arrived after this moment
+      const sendCodeTime = Date.now();
       this.log("Clicking 'Send Code' button...");
       await this._clickButtonByText("Send Code");
       this.log("Send Code clicked. Waiting for OTP email...");
@@ -228,6 +230,7 @@ class AFKBot {
         ...this.imapConfig,
         sender: "noreply@bytenut.com",
         timeout: 120000,
+        sentAfter: sendCodeTime,  // only accept emails received AFTER clicking Send Code
       });
       this.log(`OTP received: ${otp}`);
 
@@ -236,6 +239,7 @@ class AFKBot {
       const codeField = await this.page.$('input.el-input__inner[placeholder="6-digit code"]');
       if (!codeField) throw new Error("Could not find 6-digit code input field");
       await codeField.click({ clickCount: 3 });
+      await codeField.evaluate((el) => { el.value = ""; }); // clear any pre-filled value
       await this.page.keyboard.type(otp, { delay: 80 });
       this.log("OTP entered into code field.");
 
@@ -244,6 +248,13 @@ class AFKBot {
       this.log("Clicking 'Extend' button...");
       await this._clickButtonByText("Extend");
       this.log("Extend clicked! Waiting for renewal confirmation...");
+
+      // Step 4b: check for OTP error (wrong code) before waiting for success
+      await this._sleep(1500);
+      const otpError = await this._getOTPErrorText();
+      if (otpError) {
+        throw new Error(`OTP rejected by server: "${otpError}". The code may have expired or was incorrect.`);
+      }
 
       // Step 5: wait for banner to disappear or success indicator
       await this._waitForRenewalSuccess();
@@ -273,6 +284,19 @@ class AFKBot {
     } catch (_) {}
 
     throw new Error(`Could not find button with text: "${text}"`);
+  }
+
+  async _getOTPErrorText() {
+    try {
+      const errEl = await this.page.$(
+        '.el-message--error, .el-notification--error, .el-form-item__error, [class*="error"][class*="msg"], .el-alert--error'
+      );
+      if (!errEl) return null;
+      const text = await errEl.evaluate((el) => el.textContent.trim()).catch(() => "");
+      return text || null;
+    } catch (_) {
+      return null;
+    }
   }
 
   async _waitForRenewalSuccess(timeout = 30000) {
