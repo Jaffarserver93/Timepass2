@@ -571,11 +571,20 @@
 
     ws.onerror = () => setWS("error");
 
+    ws.binaryType = "blob";
+
     ws.onmessage = (e) => {
-      const { type, data } = JSON.parse(e.data);
-      if (type === "screenshot") handleScreenshot(data);
-      else if (type === "status") handleStatus(data);
-      else if (type === "log") appendLog(data);
+      // Binary frame = JPEG screenshot
+      if (e.data instanceof Blob) {
+        handleScreenshotBlob(e.data);
+        return;
+      }
+      // Text frame = JSON control message
+      try {
+        const { type, data } = JSON.parse(e.data);
+        if (type === "status") handleStatus(data);
+        else if (type === "log") appendLog(data);
+      } catch (_) {}
     };
   }
 
@@ -586,15 +595,24 @@
     label.textContent = state === "connected" ? "Connected" : state === "error" ? "Error" : "Reconnecting…";
   }
 
-  // Screenshot
-  function handleScreenshot(data) {
+  // Screenshot — binary Blob → object URL (no base64, no corruption)
+  let currentObjectURL = null;
+  function handleScreenshotBlob(blob) {
     const img = document.getElementById("screenshot");
     const placeholder = document.getElementById("placeholder");
-    img.src = "data:image/jpeg;base64," + data.image;
+
+    const url = URL.createObjectURL(blob);
+    img.src = url;
     img.style.display = "block";
     placeholder.style.display = "none";
     document.getElementById("liveBadge").style.display = "";
     fpsFrames++;
+
+    // Revoke previous URL to free memory
+    img.onload = () => {
+      if (currentObjectURL) URL.revokeObjectURL(currentObjectURL);
+      currentObjectURL = url;
+    };
   }
 
   // FPS Counter

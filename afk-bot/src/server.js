@@ -36,8 +36,11 @@ const bot = new AFKBot({
   email: EMAIL,
   password: PASSWORD,
   onScreenshot: (buf) => {
-    const b64 = buf.toString("base64");
-    broadcast("screenshot", { image: b64, ts: Date.now() });
+    // Send as raw binary frame — avoids base64 corruption over WebSocket
+    const frame = Buffer.from(buf);
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) client.send(frame, { binary: true });
+    });
   },
   onLog: (entry) => {
     logs.push(entry);
