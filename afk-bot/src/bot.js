@@ -320,33 +320,56 @@ class AFKBot {
 
   async _waitForTurnstile(timeout = 60000) {
     const deadline = Date.now() + timeout;
+
+    // Phase 1: wait up to 10s for the Turnstile iframe to actually appear in the DOM.
+    // Without this, we'd see 0 iframes, wrongly assume no CAPTCHA, and proceed instantly.
+    this.log("Turnstile: waiting for widget to load...");
+    const iframeAppeared = await this._waitForTurnstileIframe(10000);
+    if (!iframeAppeared) {
+      this.log("Turnstile: no widget detected on page — proceeding.");
+      return;
+    }
+    this.log("Turnstile: widget found. Waiting for it to be solved...");
+
+    // Phase 2: wait for the token to be populated (means auto-solver has finished)
     while (Date.now() < deadline) {
       const solved = await this.page.evaluate(() => {
-        // Strategy 1: cf-turnstile-response hidden input has a token value
+        // Strategy 1: hidden input carries the solved token
         const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
         for (const inp of inputs) {
           if (inp.value && inp.value.length > 10) return true;
         }
-        // Strategy 2: Turnstile iframe shows a success checkbox state
-        const iframes = document.querySelectorAll('iframe[src*="challenges.cloudflare.com/turnstile"]');
-        if (iframes.length === 0) {
-          // No Turnstile widget present on this page — skip wait
-          return true;
-        }
-        // Strategy 3: check for a success indicator in the widget wrapper
+        // Strategy 2: widget wrapper shows solved state
         const wrapper = document.querySelector('.cf-turnstile, [data-cf-turnstile]');
         if (wrapper) {
           const successEl = wrapper.querySelector('[data-state="solved"], .cf-success');
           if (successEl) return true;
         }
         return false;
-      }).catch(() => true); // if page crashed or eval failed, proceed
+      }).catch(() => false);
 
-      if (solved) return;
+      if (solved) {
+        this.log("Turnstile: solved ✓");
+        return;
+      }
       await this._sleep(1000);
     }
+
     // Non-fatal: if we can't confirm, proceed anyway (library may have already solved it)
     this.log("Turnstile wait timed out — proceeding anyway.", "warn");
+  }
+
+  async _waitForTurnstileIframe(timeout = 10000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const found = await this.page.evaluate(() => {
+        const iframes = document.querySelectorAll('iframe[src*="challenges.cloudflare.com/turnstile"]');
+        return iframes.length > 0;
+      }).catch(() => false);
+      if (found) return true;
+      await this._sleep(500);
+    }
+    return false;
   }
 
   async _getOTPErrorText() {
