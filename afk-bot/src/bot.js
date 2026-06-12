@@ -233,7 +233,8 @@ class AFKBot {
       // received after this moment (prevents stale OTP reuse)
       const sendCodeTime = Date.now();
       await this._clickButtonByText("Send Code");
-      this.log("Send Code clicked. Waiting for OTP email...");
+      this.log("Send Code clicked. Waiting 5 seconds for OTP email to arrive...");
+      await this._sleep(5000); // give the mail server time to deliver before IMAP search
 
       // Step 2: fetch OTP from email
       if (!this.imapConfig || !this.imapConfig.host) {

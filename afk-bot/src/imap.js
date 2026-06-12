@@ -41,6 +41,15 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
           const sorted = [...uids].reverse();
 
           for (const uid of sorted) {
+            // IMPORTANT: IMAP SINCE is day-granularity only (RFC 3501) — it
+            // cannot filter by time-of-day. We must check INTERNALDATE on each
+            // message to discard emails that arrived before we clicked Send Code.
+            const internalDate = await _fetchInternalDate(client, uid);
+            if (internalDate && sentAfter && internalDate.getTime() < (sentAfter - 5000)) {
+              // This email is older than our Send Code click — skip it
+              continue;
+            }
+
             const source = await _fetchSource(client, uid);
             if (!source) continue;
 
@@ -93,6 +102,15 @@ async function testIMAP({ host, port, user, pass }) {
   } catch (err) {
     return { ok: false, message: `IMAP error: ${err.message}` };
   }
+}
+
+async function _fetchInternalDate(client, uid) {
+  try {
+    for await (const msg of client.fetch(`${uid}`, { internalDate: true }, { uid: true })) {
+      if (msg.internalDate) return new Date(msg.internalDate);
+    }
+  } catch (_) {}
+  return null;
 }
 
 async function _fetchSource(client, uid) {
