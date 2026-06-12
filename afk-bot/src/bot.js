@@ -131,38 +131,25 @@ class AFKBot {
   }
 
   async _fillLogin() {
-    const emailSelectors = [
-      'input[type="email"]',
-      'input[name="email"]',
-      'input[placeholder*="mail" i]',
-      'input[id*="email" i]',
-    ];
+    this.log("Waiting for login form fields...");
 
-    let emailField = null;
-    for (const sel of emailSelectors) {
-      emailField = await this.page.$(sel).catch(() => null);
-      if (emailField) break;
-    }
+    // Email field: type="text" placeholder="Username" class="el-input__inner"
+    await this.page.waitForSelector('input.el-input__inner[placeholder="Username"]', { timeout: 15000 });
 
-    if (!emailField) {
-      await this.page.waitForSelector(emailSelectors.join(", "), { timeout: 15000 });
-      for (const sel of emailSelectors) {
-        emailField = await this.page.$(sel).catch(() => null);
-        if (emailField) break;
-      }
-    }
-
-    if (!emailField) throw new Error("Could not find email input field");
+    const emailField = await this.page.$('input.el-input__inner[placeholder="Username"]');
+    if (!emailField) throw new Error("Could not find Username input field");
 
     await emailField.click({ clickCount: 3 });
-    await emailField.type(this.email, { delay: 45 });
+    await this.page.keyboard.type(this.email, { delay: 50 });
+    this.log("Email/username entered.");
 
-    const passField = await this.page.$('input[type="password"]');
-    if (!passField) throw new Error("Could not find password input field");
+    // Password field: type="password" placeholder="Password" class="el-input__inner"
+    const passField = await this.page.$('input.el-input__inner[placeholder="Password"]');
+    if (!passField) throw new Error("Could not find Password input field");
+
     await passField.click({ clickCount: 3 });
-    await passField.type(this.password, { delay: 45 });
-
-    this.log("Credentials filled. Submitting...");
+    await this.page.keyboard.type(this.password, { delay: 50 });
+    this.log("Password entered. Submitting...");
 
     await Promise.all([
       this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }),
@@ -176,6 +163,7 @@ class AFKBot {
         const errText = await errEl.evaluate((el) => el.textContent.trim()).catch(() => "");
         throw new Error(`Login failed: ${errText || "still on login page after submit"}`);
       }
+      throw new Error("Login failed: still on login page after submit");
     }
 
     this.log(`Login successful. URL: ${url}`);
