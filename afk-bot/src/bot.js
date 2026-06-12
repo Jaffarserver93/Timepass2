@@ -1,6 +1,7 @@
 const { connect } = require("puppeteer-real-browser");
 const { fetchOTP } = require("./imap");
 
+
 const LOGIN_URL = "https://www.bytenut.com/auth/login";
 const TARGET_URL = "https://www.bytenut.com/free-gamepanel/87079436";
 const RELOAD_INTERVAL_MS = 60 * 1000;
@@ -103,8 +104,10 @@ class AFKBot {
       await this._waitForCloudflare();
       this.log("AFK target page loaded. Checking server status...");
 
-      // Check and auto-renew if server is paused
-      await this._checkAndRenewIfPaused();
+      // Non-fatal: renewal failure should NOT kill the bot
+      await this._checkAndRenewIfPaused().catch((e) =>
+        this.log(`Auto-renew failed (bot will continue): ${e.message}`, "warn")
+      );
 
       this.startTime = Date.now();
       this.reloadCount = 0;

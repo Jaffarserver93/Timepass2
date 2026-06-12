@@ -5,6 +5,7 @@ const path = require("path");
 const express = require("express");
 const { WebSocketServer } = require("ws");
 const AFKBot = require("./bot");
+const { testIMAP } = require("./imap");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const EMAIL = process.env.EMAIL;
@@ -85,6 +86,11 @@ app.post("/api/scroll", async (req, res) => {
   const amount = parseInt(req.body.amount) || 300;
   const ok = await bot.scroll(direction, amount);
   res.json({ ok, message: ok ? `Scrolled ${direction}` : "Bot not running or page unavailable" });
+});
+
+app.post("/api/test-imap", async (req, res) => {
+  const result = await testIMAP(imapConfig).catch((err) => ({ ok: false, message: err.message }));
+  res.json(result);
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────────────
