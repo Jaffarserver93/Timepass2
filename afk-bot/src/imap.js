@@ -1,11 +1,40 @@
 const { ImapFlow } = require("imapflow");
 
 /**
- * Fetches the latest OTP from noreply@bytenut.com via IMAP.
- * Handles digits with or without spaces (e.g. "768233" or "7 6 8 2 3 3").
- * Retries every 5 seconds for up to `timeout` ms.
+ * Returns the UIDNEXT value of INBOX — the UID that will be assigned to the
+ * NEXT arriving message. Call this BEFORE clicking "Send Code" so that any
+ * email with uid >= this value is guaranteed to be a fresh, new message.
  */
-async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com", timeout = 120000, sentAfter = null }) {
+async function getUIDNext({ host, port, user, pass }) {
+  const portNum = parseInt(port);
+  const secure = portNum === 993 || portNum === 465;
+  const client = new ImapFlow({
+    host, port: portNum, secure,
+    auth: { user, pass },
+    logger: false,
+    tls: { rejectUnauthorized: false },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+  });
+  await client.connect();
+  try {
+    const lock = await client.getMailboxLock("INBOX");
+    const uidNext = client.mailbox.uidNext;
+    lock.release();
+    return uidNext;
+  } finally {
+    await client.logout().catch(() => {});
+  }
+}
+
+/**
+ * Waits for a new OTP email from `sender` with UID >= minUid (captured before
+ * clicking Send Code). Retries every 5 seconds for up to `timeout` ms.
+ *
+ * minUid is the primary guard — it is UID-based and immune to clock skew.
+ * sentAfter is a secondary sanity check (INTERNALDATE >= sentAfter).
+ */
+async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com", timeout = 120000, minUid = null, sentAfter = null }) {
   const portNum = parseInt(port);
   const secure = portNum === 993 || portNum === 465;
 
@@ -23,11 +52,9 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
   try {
     const lock = await client.getMailboxLock("INBOX");
     try {
-      // Use sentAfter if provided (set to just before Send Code was clicked),
-      // otherwise fall back to 3 minutes ago (not 10) to avoid stale OTPs
-      const searchAfter = sentAfter
-        ? new Date(sentAfter - 5000)   // 5 sec buffer before click
-        : new Date(Date.now() - 3 * 60 * 1000);
+      // IMAP SINCE is day-granularity only (RFC 3501), so use today's date
+      // purely to limit the result set — real filtering is done by UID below.
+      const searchAfter = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const deadline = Date.now() + timeout;
 
       while (Date.now() < deadline) {
@@ -37,17 +64,23 @@ async function fetchOTP({ host, port, user, pass, sender = "noreply@bytenut.com"
         ).catch(() => []);
 
         if (uids && uids.length > 0) {
-          // Process newest first
-          const sorted = [...uids].reverse();
+          // Process newest first (highest UID = most recently received)
+          const sorted = [...uids].sort((a, b) => b - a);
 
           for (const uid of sorted) {
-            // IMPORTANT: IMAP SINCE is day-granularity only (RFC 3501) — it
-            // cannot filter by time-of-day. We must check INTERNALDATE on each
-            // message to discard emails that arrived before we clicked Send Code.
-            const internalDate = await _fetchInternalDate(client, uid);
-            if (internalDate && sentAfter && internalDate.getTime() < (sentAfter - 5000)) {
-              // This email is older than our Send Code click — skip it
+            // Primary guard: skip any email that existed before we clicked
+            // "Send Code". Only UIDs >= minUid are from this session.
+            if (minUid != null && uid < minUid) {
               continue;
+            }
+
+            // Secondary guard: INTERNALDATE must be >= sentAfter (handles
+            // the rare case where UIDNEXT wasn't available)
+            if (sentAfter) {
+              const internalDate = await _fetchInternalDate(client, uid);
+              if (internalDate && internalDate.getTime() < (sentAfter - 10000)) {
+                continue;
+              }
             }
 
             const source = await _fetchSource(client, uid);
@@ -125,28 +158,25 @@ async function _fetchSource(client, uid) {
 function _extractOTP(raw) {
   // Decode quoted-printable (=3D etc) and line-breaks
   const decoded = raw
-    .replace(/=\r?\n/g, "")              // soft line breaks
+    .replace(/=\r?\n/g, "")
     .replace(/=[0-9A-Fa-f]{2}/g, (m) => String.fromCharCode(parseInt(m.slice(1), 16)))
-    .replace(/\u00a0/g, " ");            // normalize non-breaking spaces
+    .replace(/\u00a0/g, " ");
 
   // Strip HTML tags to get plain text before matching
   const plain = decoded.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
 
-  // Strategy 1: six consecutive digits NOT part of a longer number (e.g. 894654)
-  // Use negative lookbehind/lookahead to avoid matching inside 7+ digit sequences
+  // Strategy 1: six consecutive digits NOT part of a longer number
   const m1 = plain.match(/(?<!\d)(\d{6})(?!\d)/);
   if (m1) return m1[1];
 
-  // Strategy 2: digits separated by single spaces (e.g. "8 9 4 6 5 4")
-  // Must be exactly 6 single digits each separated by one space
+  // Strategy 2: digits separated by single spaces (e.g. "5 7 1 4 3 0")
   const m2 = plain.match(/(?<!\d)\d( \d){5}(?!\d)/);
   if (m2) {
     const digits = m2[0].replace(/ /g, "");
     if (digits.length === 6) return digits;
   }
 
-  // Strategy 3: digits with optional whitespace — only inside a verification context
-  // Look for the code near keywords like "code", "verification", "OTP"
+  // Strategy 3: digits near verification keywords
   const ctxMatch = plain.match(/(?:code|verification|otp)[^\d]{0,80}((?:\d[\s]{0,2}){6})/i);
   if (ctxMatch) {
     const digits = ctxMatch[1].replace(/\s/g, "");
@@ -160,4 +190,4 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { fetchOTP, testIMAP };
+module.exports = { fetchOTP, testIMAP, getUIDNext };

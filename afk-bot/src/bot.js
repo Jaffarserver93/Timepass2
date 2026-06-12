@@ -1,5 +1,5 @@
 const { connect } = require("puppeteer-real-browser");
-const { fetchOTP } = require("./imap");
+const { fetchOTP, getUIDNext } = require("./imap");
 
 
 const LOGIN_URL = "https://www.bytenut.com/auth/login";
@@ -222,30 +222,40 @@ class AFKBot {
     this.setStatus("renewing");
 
     try {
-      // Step 1: wait for Turnstile to be solved BEFORE clicking Send Code.
-      // The renewal modal embeds a Turnstile widget; clicking too early sends
-      // no verification request and no OTP email is triggered.
+      if (!this.imapConfig || !this.imapConfig.host) {
+        throw new Error("IMAP credentials not set in .env — cannot fetch OTP. Set IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS.");
+      }
+
+      // Step 1a: capture UIDNEXT from inbox BEFORE doing anything else.
+      // UIDNEXT is the UID that will be assigned to the NEXT incoming message,
+      // so any email with uid >= uidNext is guaranteed to be fresh.
+      // We capture it here, before Turnstile wait, so even if the Turnstile
+      // takes 30+ seconds no stale email can sneak in with a matching UID.
+      this.log("Capturing inbox baseline (UIDNEXT) before clicking Send Code...");
+      const minUid = await getUIDNext(this.imapConfig).catch((e) => {
+        this.log(`Could not get UIDNEXT (will fall back to timestamp): ${e.message}`, "warn");
+        return null;
+      });
+      if (minUid != null) this.log(`Inbox baseline UID: ${minUid}. Only emails with UID ≥ this will be accepted.`);
+
+      // Step 1b: wait for Turnstile to be solved BEFORE clicking Send Code.
       this.log("Waiting for Turnstile challenge to be solved...");
       await this._waitForTurnstile(60000);
       this.log("Turnstile solved. Clicking 'Send Code' button...");
 
-      // Record timestamp right before clicking — IMAP will only accept emails
-      // received after this moment (prevents stale OTP reuse)
+      // Record timestamp right before clicking (fallback if UIDNEXT unavailable)
       const sendCodeTime = Date.now();
       await this._clickButtonByText("Send Code");
       this.log("Send Code clicked. Waiting 5 seconds for OTP email to arrive...");
       await this._sleep(5000); // give the mail server time to deliver before IMAP search
 
-      // Step 2: fetch OTP from email
-      if (!this.imapConfig || !this.imapConfig.host) {
-        throw new Error("IMAP credentials not set in .env — cannot fetch OTP. Set IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS.");
-      }
-
+      // Step 2: fetch OTP — only accepts emails with UID >= minUid (new emails)
       const otp = await fetchOTP({
         ...this.imapConfig,
         sender: "noreply@bytenut.com",
         timeout: 120000,
-        sentAfter: sendCodeTime,  // only accept emails received AFTER clicking Send Code
+        minUid,          // primary guard: UID-based, immune to clock skew
+        sentAfter: sendCodeTime,  // secondary guard: timestamp fallback
       });
       this.log(`OTP received: ${otp}`);
 
