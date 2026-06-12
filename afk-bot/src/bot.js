@@ -3,7 +3,7 @@ const { connect } = require("puppeteer-real-browser");
 const LOGIN_URL = "https://www.bytenut.com/auth/login";
 const TARGET_URL = "https://www.bytenut.com/free-gamepanel/87079436";
 const RELOAD_INTERVAL_MS = 60 * 1000;
-const SCREENSHOT_INTERVAL_MS = 100;
+const SCREENSHOT_INTERVAL_MS = 500;
 
 class AFKBot {
   constructor({ email, password, onScreenshot, onLog, onStatusChange }) {
